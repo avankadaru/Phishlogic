@@ -1,5 +1,5 @@
 /**
- * Whitelist service for managing and checking trusted sources
+ * Whitelist service for managing and checking trusted sources (PostgreSQL version)
  */
 
 import { randomUUID } from 'node:crypto';
@@ -12,52 +12,83 @@ import type {
 import type { NormalizedInput } from '../models/input.js';
 import { isEmailInput, isUrlInput } from '../models/input.js';
 import { getLogger } from '../../infrastructure/logging/index.js';
+import { query } from '../../infrastructure/database/client.js';
 
 const logger = getLogger();
 
 /**
- * Whitelist service implementation
+ * Database row to WhitelistEntry mapper
+ */
+function mapRowToEntry(row: any): WhitelistEntry {
+  return {
+    id: row.id,
+    type: row.type,
+    value: row.value,
+    description: row.description,
+    addedAt: new Date(row.created_at),
+    expiresAt: row.expires_at ? new Date(row.expires_at) : undefined,
+    active: row.is_active,
+  };
+}
+
+/**
+ * Whitelist service implementation with PostgreSQL backend
  */
 export class WhitelistService {
-  private entries: Map<string, WhitelistEntry> = new Map();
+  private tenantId: string | null;
 
-  constructor() {
-    logger.info('WhitelistService initialized');
+  constructor(tenantId?: string) {
+    this.tenantId = tenantId || null; // Multi-tenant ready
+    logger.debug({ tenantId: this.tenantId }, 'WhitelistService initialized');
   }
 
   /**
    * Add a new whitelist entry
    */
-  addEntry(options: AddWhitelistEntryOptions): WhitelistEntry {
+  async addEntry(options: AddWhitelistEntryOptions): Promise<WhitelistEntry> {
     const id = randomUUID();
-    const entry: WhitelistEntry = {
-      id,
-      type: options.type,
-      value: this.normalizeValue(options.value, options.type),
-      description: options.description,
-      addedAt: new Date(),
-      expiresAt: options.expiresAt,
-      active: true,
-    };
+    const normalizedValue = this.normalizeValue(options.value, options.type);
 
-    this.entries.set(id, entry);
+    const result = await query(
+      `INSERT INTO whitelist_entries
+       (id, tenant_id, type, value, description, expires_at, added_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING *`,
+      [
+        id,
+        this.tenantId,
+        options.type,
+        normalizedValue,
+        options.description,
+        options.expiresAt,
+        'system',
+      ]
+    );
+
     logger.info({
-      msg: 'Whitelist entry added',
       entryId: id,
-      type: entry.type,
-      value: entry.value,
-    });
+      type: options.type,
+      value: normalizedValue,
+      tenantId: this.tenantId,
+    }, 'Whitelist entry added');
 
-    return entry;
+    return mapRowToEntry(result.rows[0]);
   }
 
   /**
-   * Remove a whitelist entry by ID
+   * Remove a whitelist entry by ID (soft delete)
    */
-  removeEntry(id: string): boolean {
-    const deleted = this.entries.delete(id);
+  async removeEntry(id: string): Promise<boolean> {
+    const result = await query(
+      `UPDATE whitelist_entries
+       SET deleted_at = NOW(), updated_at = NOW()
+       WHERE id = $1 AND tenant_id IS NOT DISTINCT FROM $2 AND deleted_at IS NULL`,
+      [id, this.tenantId]
+    );
+
+    const deleted = (result.rowCount ?? 0) > 0;
     if (deleted) {
-      logger.info({ msg: 'Whitelist entry removed', entryId: id });
+      logger.info({ entryId: id, tenantId: this.tenantId }, 'Whitelist entry removed');
     }
     return deleted;
   }
@@ -65,88 +96,128 @@ export class WhitelistService {
   /**
    * Deactivate a whitelist entry (soft delete)
    */
-  deactivateEntry(id: string): boolean {
-    const entry = this.entries.get(id);
-    if (entry) {
-      entry.active = false;
-      logger.info({ msg: 'Whitelist entry deactivated', entryId: id });
-      return true;
+  async deactivateEntry(id: string): Promise<boolean> {
+    const result = await query(
+      `UPDATE whitelist_entries
+       SET is_active = false, updated_at = NOW()
+       WHERE id = $1 AND tenant_id IS NOT DISTINCT FROM $2 AND deleted_at IS NULL`,
+      [id, this.tenantId]
+    );
+
+    const updated = (result.rowCount ?? 0) > 0;
+    if (updated) {
+      logger.info({ entryId: id, tenantId: this.tenantId }, 'Whitelist entry deactivated');
     }
-    return false;
+    return updated;
   }
 
   /**
    * Activate a whitelist entry
    */
-  activateEntry(id: string): boolean {
-    const entry = this.entries.get(id);
-    if (entry) {
-      entry.active = true;
-      logger.info({ msg: 'Whitelist entry activated', entryId: id });
-      return true;
+  async activateEntry(id: string): Promise<boolean> {
+    const result = await query(
+      `UPDATE whitelist_entries
+       SET is_active = true, updated_at = NOW()
+       WHERE id = $1 AND tenant_id IS NOT DISTINCT FROM $2 AND deleted_at IS NULL`,
+      [id, this.tenantId]
+    );
+
+    const updated = (result.rowCount ?? 0) > 0;
+    if (updated) {
+      logger.info({ entryId: id, tenantId: this.tenantId }, 'Whitelist entry activated');
     }
-    return false;
+    return updated;
   }
 
   /**
    * Get a whitelist entry by ID
    */
-  getEntry(id: string): WhitelistEntry | undefined {
-    return this.entries.get(id);
+  async getEntry(id: string): Promise<WhitelistEntry | undefined> {
+    const result = await query(
+      `SELECT * FROM whitelist_entries
+       WHERE id = $1 AND tenant_id IS NOT DISTINCT FROM $2 AND deleted_at IS NULL`,
+      [id, this.tenantId]
+    );
+
+    return result.rows.length > 0 ? mapRowToEntry(result.rows[0]) : undefined;
   }
 
   /**
    * Get all whitelist entries
    */
-  getAllEntries(): WhitelistEntry[] {
-    return Array.from(this.entries.values());
+  async getAllEntries(): Promise<WhitelistEntry[]> {
+    const result = await query(
+      `SELECT * FROM whitelist_entries
+       WHERE tenant_id IS NOT DISTINCT FROM $1 AND deleted_at IS NULL
+       ORDER BY created_at DESC`,
+      [this.tenantId]
+    );
+
+    return result.rows.map(mapRowToEntry);
   }
 
   /**
    * Get all active whitelist entries
    */
-  getActiveEntries(): WhitelistEntry[] {
-    return this.getAllEntries().filter((entry) => this.isEntryValid(entry));
+  async getActiveEntries(): Promise<WhitelistEntry[]> {
+    const result = await query(
+      `SELECT * FROM whitelist_entries
+       WHERE tenant_id IS NOT DISTINCT FROM $1
+         AND deleted_at IS NULL
+         AND is_active = true
+         AND (expires_at IS NULL OR expires_at > NOW())
+       ORDER BY created_at DESC`,
+      [this.tenantId]
+    );
+
+    return result.rows.map(mapRowToEntry);
   }
 
   /**
    * Get entries by type
    */
-  getEntriesByType(type: WhitelistType): WhitelistEntry[] {
-    return this.getAllEntries().filter((entry) => entry.type === type);
+  async getEntriesByType(type: WhitelistType): Promise<WhitelistEntry[]> {
+    const result = await query(
+      `SELECT * FROM whitelist_entries
+       WHERE tenant_id IS NOT DISTINCT FROM $1
+         AND type = $2
+         AND deleted_at IS NULL
+       ORDER BY created_at DESC`,
+      [this.tenantId, type]
+    );
+
+    return result.rows.map(mapRowToEntry);
   }
 
   /**
    * Check if an input is whitelisted
    */
-  check(input: NormalizedInput): WhitelistCheckResult {
+  async check(input: NormalizedInput): Promise<WhitelistCheckResult> {
     const startTime = Date.now();
 
     // Check email whitelist
     if (isEmailInput(input)) {
       const emailAddress = input.data.parsed.from.address;
-      const emailResult = this.checkEmail(emailAddress);
+      const emailResult = await this.checkEmail(emailAddress);
       if (emailResult.isWhitelisted) {
         logger.debug({
-          msg: 'Whitelist match found',
           type: 'email',
           value: emailAddress,
           duration: Date.now() - startTime,
-        });
+        }, 'Whitelist match found');
         return emailResult;
       }
 
       // Also check domain from email
       const domain = this.extractDomain(emailAddress);
       if (domain) {
-        const domainResult = this.checkDomain(domain);
+        const domainResult = await this.checkDomain(domain);
         if (domainResult.isWhitelisted) {
           logger.debug({
-            msg: 'Whitelist match found',
             type: 'domain',
             value: domain,
             duration: Date.now() - startTime,
-          });
+          }, 'Whitelist match found');
           return domainResult;
         }
       }
@@ -154,28 +225,26 @@ export class WhitelistService {
       // Check URLs extracted from email body
       if (input.data.parsed.urls && input.data.parsed.urls.length > 0) {
         for (const url of input.data.parsed.urls) {
-          const urlResult = this.checkUrl(url);
+          const urlResult = await this.checkUrl(url);
           if (urlResult.isWhitelisted) {
             logger.debug({
-              msg: 'Whitelist match found',
               type: 'url',
               value: url,
               duration: Date.now() - startTime,
-            });
+            }, 'Whitelist match found');
             return urlResult;
           }
 
           // Check domain from URL
           const urlDomain = this.extractDomainFromUrl(url);
           if (urlDomain) {
-            const domainResult = this.checkDomain(urlDomain);
+            const domainResult = await this.checkDomain(urlDomain);
             if (domainResult.isWhitelisted) {
               logger.debug({
-                msg: 'Whitelist match found',
                 type: 'domain',
                 value: urlDomain,
                 duration: Date.now() - startTime,
-              });
+              }, 'Whitelist match found');
               return domainResult;
             }
           }
@@ -186,37 +255,34 @@ export class WhitelistService {
     // Check URL whitelist
     if (isUrlInput(input)) {
       const url = input.data.url;
-      const urlResult = this.checkUrl(url);
+      const urlResult = await this.checkUrl(url);
       if (urlResult.isWhitelisted) {
         logger.debug({
-          msg: 'Whitelist match found',
           type: 'url',
           value: url,
           duration: Date.now() - startTime,
-        });
+        }, 'Whitelist match found');
         return urlResult;
       }
 
       // Also check domain from URL
       const domain = this.extractDomainFromUrl(url);
       if (domain) {
-        const domainResult = this.checkDomain(domain);
+        const domainResult = await this.checkDomain(domain);
         if (domainResult.isWhitelisted) {
           logger.debug({
-            msg: 'Whitelist match found',
             type: 'domain',
             value: domain,
             duration: Date.now() - startTime,
-          });
+          }, 'Whitelist match found');
           return domainResult;
         }
       }
     }
 
     logger.debug({
-      msg: 'No whitelist match found',
       duration: Date.now() - startTime,
-    });
+    }, 'No whitelist match found');
 
     return { isWhitelisted: false };
   }
@@ -224,18 +290,34 @@ export class WhitelistService {
   /**
    * Check if an email address is whitelisted
    */
-  private checkEmail(email: string): WhitelistCheckResult {
+  private async checkEmail(email: string): Promise<WhitelistCheckResult> {
     const normalizedEmail = this.normalizeValue(email, 'email');
-    const activeEntries = this.getActiveEntries();
 
-    for (const entry of activeEntries) {
-      if (entry.type === 'email' && entry.value === normalizedEmail) {
-        return {
-          isWhitelisted: true,
-          matchedEntry: entry,
-          matchReason: 'exact email match',
-        };
-      }
+    const result = await query(
+      `SELECT * FROM whitelist_entries
+       WHERE tenant_id IS NOT DISTINCT FROM $1
+         AND type = 'email'
+         AND value = $2
+         AND is_active = true
+         AND deleted_at IS NULL
+         AND (expires_at IS NULL OR expires_at > NOW())
+       LIMIT 1`,
+      [this.tenantId, normalizedEmail]
+    );
+
+    if (result.rows.length > 0) {
+      const entry = mapRowToEntry(result.rows[0]);
+
+      // Update match count asynchronously (don't wait)
+      this.incrementMatchCount(entry.id).catch((err) => {
+        logger.warn({ err, entryId: entry.id }, 'Failed to increment match count');
+      });
+
+      return {
+        isWhitelisted: true,
+        matchedEntry: entry,
+        matchReason: 'exact email match',
+      };
     }
 
     return { isWhitelisted: false };
@@ -244,18 +326,34 @@ export class WhitelistService {
   /**
    * Check if a domain is whitelisted
    */
-  private checkDomain(domain: string): WhitelistCheckResult {
+  private async checkDomain(domain: string): Promise<WhitelistCheckResult> {
     const normalizedDomain = this.normalizeValue(domain, 'domain');
-    const activeEntries = this.getActiveEntries();
 
-    for (const entry of activeEntries) {
-      if (entry.type === 'domain' && entry.value === normalizedDomain) {
-        return {
-          isWhitelisted: true,
-          matchedEntry: entry,
-          matchReason: 'exact domain match',
-        };
-      }
+    const result = await query(
+      `SELECT * FROM whitelist_entries
+       WHERE tenant_id IS NOT DISTINCT FROM $1
+         AND type = 'domain'
+         AND value = $2
+         AND is_active = true
+         AND deleted_at IS NULL
+         AND (expires_at IS NULL OR expires_at > NOW())
+       LIMIT 1`,
+      [this.tenantId, normalizedDomain]
+    );
+
+    if (result.rows.length > 0) {
+      const entry = mapRowToEntry(result.rows[0]);
+
+      // Update match count asynchronously
+      this.incrementMatchCount(entry.id).catch((err) => {
+        logger.warn({ err, entryId: entry.id }, 'Failed to increment match count');
+      });
+
+      return {
+        isWhitelisted: true,
+        matchedEntry: entry,
+        matchReason: 'exact domain match',
+      };
     }
 
     return { isWhitelisted: false };
@@ -264,48 +362,53 @@ export class WhitelistService {
   /**
    * Check if a URL is whitelisted
    */
-  private checkUrl(url: string): WhitelistCheckResult {
+  private async checkUrl(url: string): Promise<WhitelistCheckResult> {
     const normalizedUrl = this.normalizeValue(url, 'url');
-    const activeEntries = this.getActiveEntries();
 
-    for (const entry of activeEntries) {
-      if (entry.type === 'url') {
-        // Exact match
-        if (entry.value === normalizedUrl) {
-          return {
-            isWhitelisted: true,
-            matchedEntry: entry,
-            matchReason: 'exact URL match',
-          };
-        }
+    // Check for exact match or prefix match
+    const result = await query(
+      `SELECT * FROM whitelist_entries
+       WHERE tenant_id IS NOT DISTINCT FROM $1
+         AND type = 'url'
+         AND ($2 = value OR $2 LIKE value || '%')
+         AND is_active = true
+         AND deleted_at IS NULL
+         AND (expires_at IS NULL OR expires_at > NOW())
+       LIMIT 1`,
+      [this.tenantId, normalizedUrl]
+    );
 
-        // Prefix match (for URLs with query params)
-        if (normalizedUrl.startsWith(entry.value)) {
-          return {
-            isWhitelisted: true,
-            matchedEntry: entry,
-            matchReason: 'URL prefix match',
-          };
-        }
-      }
+    if (result.rows.length > 0) {
+      const entry = mapRowToEntry(result.rows[0]);
+      const isExactMatch = entry.value === normalizedUrl;
+
+      // Update match count asynchronously
+      this.incrementMatchCount(entry.id).catch((err) => {
+        logger.warn({ err, entryId: entry.id }, 'Failed to increment match count');
+      });
+
+      return {
+        isWhitelisted: true,
+        matchedEntry: entry,
+        matchReason: isExactMatch ? 'exact URL match' : 'URL prefix match',
+      };
     }
 
     return { isWhitelisted: false };
   }
 
   /**
-   * Check if an entry is valid (active and not expired)
+   * Increment match count for an entry
    */
-  private isEntryValid(entry: WhitelistEntry): boolean {
-    if (!entry.active) {
-      return false;
-    }
-
-    if (entry.expiresAt && entry.expiresAt < new Date()) {
-      return false;
-    }
-
-    return true;
+  private async incrementMatchCount(id: string): Promise<void> {
+    await query(
+      `UPDATE whitelist_entries
+       SET match_count = match_count + 1,
+           last_matched_at = NOW(),
+           updated_at = NOW()
+       WHERE id = $1`,
+      [id]
+    );
   }
 
   /**
@@ -318,7 +421,6 @@ export class WhitelistService {
       case 'domain':
         return value.toLowerCase().trim().replace(/^www\./, '');
       case 'url':
-        // Remove trailing slash and normalize
         return value.toLowerCase().trim().replace(/\/$/, '');
       default:
         return value.trim();
@@ -346,23 +448,35 @@ export class WhitelistService {
   }
 
   /**
-   * Clear all entries (useful for testing)
+   * Clear all entries for this tenant (useful for testing)
    */
-  clear(): void {
-    this.entries.clear();
-    logger.info('All whitelist entries cleared');
+  async clear(): Promise<void> {
+    await query(
+      `DELETE FROM whitelist_entries WHERE tenant_id IS NOT DISTINCT FROM $1`,
+      [this.tenantId]
+    );
+    logger.info({ tenantId: this.tenantId }, 'All whitelist entries cleared');
   }
 
   /**
    * Get statistics about whitelist
    */
-  getStats(): {
+  async getStats(): Promise<{
     total: number;
     active: number;
     byType: Record<WhitelistType, number>;
-  } {
-    const entries = this.getAllEntries();
-    const active = this.getActiveEntries();
+  }> {
+    const result = await query(
+      `SELECT
+         COUNT(*) as total,
+         COUNT(*) FILTER (WHERE is_active = true AND (expires_at IS NULL OR expires_at > NOW())) as active,
+         type,
+         COUNT(*) as type_count
+       FROM whitelist_entries
+       WHERE tenant_id IS NOT DISTINCT FROM $1 AND deleted_at IS NULL
+       GROUP BY type`,
+      [this.tenantId]
+    );
 
     const byType: Record<WhitelistType, number> = {
       email: 0,
@@ -370,36 +484,39 @@ export class WhitelistService {
       url: 0,
     };
 
-    for (const entry of entries) {
-      byType[entry.type]++;
-    }
+    let total = 0;
+    let active = 0;
 
-    return {
-      total: entries.length,
-      active: active.length,
-      byType,
-    };
+    result.rows.forEach((row) => {
+      const typeCount = parseInt(row.type_count, 10);
+      total += typeCount;
+      byType[row.type as WhitelistType] = typeCount;
+
+      if (row.is_active) {
+        active += parseInt(row.active, 10);
+      }
+    });
+
+    return { total, active, byType };
   }
 }
 
 /**
- * Singleton instance
+ * Get or create whitelist service instance (tenant-aware)
+ *
+ * @param tenantId - Optional tenant ID (null for single-tenant mode in Phase 1)
+ * @returns WhitelistService instance
  */
-let whitelistServiceInstance: WhitelistService | null = null;
-
-/**
- * Get or create whitelist service instance
- */
-export function getWhitelistService(): WhitelistService {
-  if (!whitelistServiceInstance) {
-    whitelistServiceInstance = new WhitelistService();
-  }
-  return whitelistServiceInstance;
+export function getWhitelistService(tenantId?: string): WhitelistService {
+  // In Phase 1, we create a new instance each time (request-scoped)
+  // This prepares us for multi-tenancy in Phase 2
+  return new WhitelistService(tenantId);
 }
 
 /**
- * Reset whitelist service (useful for testing)
+ * Reset whitelist service (no-op in database version, kept for compatibility)
  */
 export function resetWhitelistService(): void {
-  whitelistServiceInstance = null;
+  // No-op: Database persists across service resets
+  logger.debug('resetWhitelistService called (no-op in database version)');
 }

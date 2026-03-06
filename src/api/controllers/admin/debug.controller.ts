@@ -1,0 +1,479 @@
+import { FastifyRequest, FastifyReply } from 'fastify';
+import { z } from 'zod';
+import { query } from '../../../infrastructure/database/client.js';
+import { getLogger } from '../../../infrastructure/logging/logger.js';
+
+const logger = getLogger();
+
+// Validation schemas
+const DebugQuerySchema = z.object({
+  limit: z.coerce.number().int().positive().max(100).optional().default(20),
+  offset: z.coerce.number().int().nonnegative().optional().default(0),
+  verdict: z.enum(['Safe', 'Suspicious', 'Malicious']).optional(),
+  startDate: z.string().optional(),
+  endDate: z.string().optional(),
+});
+
+/**
+ * GET /api/admin/debug/analyses - Get recent analyses with full debug info
+ */
+export async function getRecentAnalyses(
+  request: FastifyRequest<{ Querystring: unknown }>,
+  reply: FastifyReply
+): Promise<void> {
+  try {
+    const { limit, offset, verdict, startDate, endDate } = DebugQuerySchema.parse(request.query);
+
+    // Build dynamic WHERE clause
+    const conditions: string[] = ['deleted_at IS NULL'];
+    const values: any[] = [];
+    let paramIndex = 1;
+
+    if (verdict) {
+      conditions.push(`verdict = $${paramIndex}`);
+      values.push(verdict);
+      paramIndex++;
+    }
+
+    if (startDate) {
+      conditions.push(`created_at >= $${paramIndex}`);
+      values.push(startDate);
+      paramIndex++;
+    }
+
+    if (endDate) {
+      conditions.push(`created_at <= $${paramIndex}`);
+      values.push(endDate);
+      paramIndex++;
+    }
+
+    // Add limit and offset
+    values.push(limit, offset);
+
+    // Get analyses
+    const result = await query(
+      `SELECT
+         id, input_type, input_source, verdict, confidence_score,
+         risk_factors, execution_mode, ai_provider, ai_model,
+         processing_time_ms, cost_usd, tokens_used,
+         whitelisted, whitelist_reason, error_message,
+         created_at, tenant_id
+       FROM analyses
+       WHERE ${conditions.join(' AND ')}
+       ORDER BY created_at DESC
+       LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`,
+      values
+    );
+
+    // Get total count
+    const countResult = await query(
+      `SELECT COUNT(*) as total FROM analyses WHERE ${conditions.join(' AND ')}`,
+      values.slice(0, -2) // Remove limit/offset from count query
+    );
+
+    const total = parseInt(countResult.rows[0].total, 10);
+
+    reply.send({
+      success: true,
+      data: {
+        analyses: result.rows.map((row) => ({
+          id: row.id,
+          inputType: row.input_type,
+          inputSource: row.input_source,
+          verdict: row.verdict,
+          confidenceScore: parseFloat(row.confidence_score),
+          riskFactors: row.risk_factors || [],
+          executionMode: row.execution_mode,
+          aiProvider: row.ai_provider,
+          aiModel: row.ai_model,
+          processingTimeMs: parseInt(row.processing_time_ms, 10),
+          costUsd: row.cost_usd ? parseFloat(row.cost_usd) : null,
+          tokensUsed: row.tokens_used ? parseInt(row.tokens_used, 10) : null,
+          whitelisted: row.whitelisted,
+          whitelistReason: row.whitelist_reason,
+          errorMessage: row.error_message,
+          createdAt: row.created_at,
+          tenantId: row.tenant_id,
+        })),
+        pagination: {
+          total,
+          limit,
+          offset,
+          hasMore: offset + limit < total,
+        },
+      },
+    });
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      reply.status(400).send({
+        success: false,
+        error: 'Invalid query parameters',
+        details: err.errors,
+      });
+      return;
+    }
+
+    logger.error({ err }, 'Failed to get recent analyses');
+    reply.status(500).send({
+      success: false,
+      error: 'Failed to get recent analyses',
+    });
+  }
+}
+
+/**
+ * GET /api/admin/debug/analyses/:id - Get single analysis with full details
+ */
+export async function getAnalysisById(
+  request: FastifyRequest<{ Params: { id: string } }>,
+  reply: FastifyReply
+): Promise<void> {
+  try {
+    const { id } = request.params;
+
+    const result = await query(
+      `SELECT * FROM analyses WHERE id = $1 AND deleted_at IS NULL`,
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      reply.status(404).send({
+        success: false,
+        error: 'Analysis not found',
+      });
+      return;
+    }
+
+    const analysis = result.rows[0];
+
+    reply.send({
+      success: true,
+      data: {
+        id: analysis.id,
+        inputType: analysis.input_type,
+        inputSource: analysis.input_source,
+        inputData: analysis.input_data, // Full input data
+        verdict: analysis.verdict,
+        confidenceScore: parseFloat(analysis.confidence_score),
+        riskScore: parseFloat(analysis.risk_score),
+        riskFactors: analysis.risk_factors || [],
+        analyzerResults: analysis.analyzer_results || [], // Individual analyzer outputs
+        executionMode: analysis.execution_mode,
+        taskName: analysis.task_name,
+        aiProvider: analysis.ai_provider,
+        aiModel: analysis.ai_model,
+        aiPrompt: analysis.ai_prompt, // AI prompt used
+        aiResponse: analysis.ai_response, // AI response received
+        processingTimeMs: parseInt(analysis.processing_time_ms, 10),
+        costUsd: analysis.cost_usd ? parseFloat(analysis.cost_usd) : null,
+        tokensUsed: analysis.tokens_used ? parseInt(analysis.tokens_used, 10) : null,
+        whitelisted: analysis.whitelisted,
+        whitelistReason: analysis.whitelist_reason,
+        errorMessage: analysis.error_message,
+        metadata: analysis.metadata || {},
+        createdAt: analysis.created_at,
+        tenantId: analysis.tenant_id,
+      },
+    });
+  } catch (err) {
+    logger.error({ err, analysisId: request.params.id }, 'Failed to get analysis by ID');
+    reply.status(500).send({
+      success: false,
+      error: 'Failed to get analysis details',
+    });
+  }
+}
+
+/**
+ * GET /api/admin/debug/errors - Get recent error logs
+ */
+export async function getRecentErrors(
+  request: FastifyRequest<{ Querystring: unknown }>,
+  reply: FastifyReply
+): Promise<void> {
+  try {
+    const { limit, offset, startDate, endDate } = DebugQuerySchema.parse(request.query);
+
+    // Build dynamic WHERE clause
+    const conditions: string[] = ['error_message IS NOT NULL', 'deleted_at IS NULL'];
+    const values: any[] = [];
+    let paramIndex = 1;
+
+    if (startDate) {
+      conditions.push(`created_at >= $${paramIndex}`);
+      values.push(startDate);
+      paramIndex++;
+    }
+
+    if (endDate) {
+      conditions.push(`created_at <= $${paramIndex}`);
+      values.push(endDate);
+      paramIndex++;
+    }
+
+    values.push(limit, offset);
+
+    // Get error analyses
+    const result = await query(
+      `SELECT
+         id, input_type, input_source, verdict, execution_mode,
+         task_name, error_message, processing_time_ms, created_at
+       FROM analyses
+       WHERE ${conditions.join(' AND ')}
+       ORDER BY created_at DESC
+       LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`,
+      values
+    );
+
+    // Get total error count
+    const countResult = await query(
+      `SELECT COUNT(*) as total FROM analyses WHERE ${conditions.join(' AND ')}`,
+      values.slice(0, -2)
+    );
+
+    const total = parseInt(countResult.rows[0].total, 10);
+
+    reply.send({
+      success: true,
+      data: {
+        errors: result.rows.map((row) => ({
+          id: row.id,
+          inputType: row.input_type,
+          inputSource: row.input_source,
+          verdict: row.verdict,
+          executionMode: row.execution_mode,
+          taskName: row.task_name,
+          errorMessage: row.error_message,
+          processingTimeMs: parseInt(row.processing_time_ms, 10),
+          createdAt: row.created_at,
+        })),
+        pagination: {
+          total,
+          limit,
+          offset,
+          hasMore: offset + limit < total,
+        },
+      },
+    });
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      reply.status(400).send({
+        success: false,
+        error: 'Invalid query parameters',
+        details: err.errors,
+      });
+      return;
+    }
+
+    logger.error({ err }, 'Failed to get recent errors');
+    reply.status(500).send({
+      success: false,
+      error: 'Failed to get recent errors',
+    });
+  }
+}
+
+/**
+ * GET /api/admin/debug/stats - Get system statistics
+ */
+export async function getSystemStats(
+  request: FastifyRequest,
+  reply: FastifyReply
+): Promise<void> {
+  try {
+    // Get verdict distribution
+    const verdictStats = await query(
+      `SELECT
+         verdict,
+         COUNT(*) as count,
+         AVG(confidence_score) as avg_confidence,
+         AVG(processing_time_ms) as avg_processing_time
+       FROM analyses
+       WHERE deleted_at IS NULL
+         AND created_at >= NOW() - INTERVAL '24 hours'
+       GROUP BY verdict`
+    );
+
+    // Get execution mode distribution
+    const modeStats = await query(
+      `SELECT
+         execution_mode,
+         COUNT(*) as count,
+         AVG(processing_time_ms) as avg_processing_time,
+         SUM(cost_usd) as total_cost
+       FROM analyses
+       WHERE deleted_at IS NULL
+         AND created_at >= NOW() - INTERVAL '24 hours'
+       GROUP BY execution_mode`
+    );
+
+    // Get error rate
+    const errorStats = await query(
+      `SELECT
+         COUNT(*) FILTER (WHERE error_message IS NOT NULL) as error_count,
+         COUNT(*) as total_count
+       FROM analyses
+       WHERE deleted_at IS NULL
+         AND created_at >= NOW() - INTERVAL '24 hours'`
+    );
+
+    const errorRow = errorStats.rows[0];
+    const errorRate = parseInt(errorRow.total_count, 10) > 0
+      ? (parseInt(errorRow.error_count, 10) / parseInt(errorRow.total_count, 10)) * 100
+      : 0;
+
+    // Get whitelist hit rate
+    const whitelistStats = await query(
+      `SELECT
+         COUNT(*) FILTER (WHERE whitelisted = true) as whitelisted_count,
+         COUNT(*) as total_count
+       FROM analyses
+       WHERE deleted_at IS NULL
+         AND created_at >= NOW() - INTERVAL '24 hours'`
+    );
+
+    const whitelistRow = whitelistStats.rows[0];
+    const whitelistHitRate = parseInt(whitelistRow.total_count, 10) > 0
+      ? (parseInt(whitelistRow.whitelisted_count, 10) / parseInt(whitelistRow.total_count, 10)) * 100
+      : 0;
+
+    // Get task performance
+    const taskPerformance = await query(
+      `SELECT
+         task_name,
+         COUNT(*) as count,
+         AVG(processing_time_ms) as avg_processing_time,
+         AVG(cost_usd) as avg_cost
+       FROM analyses
+       WHERE deleted_at IS NULL
+         AND created_at >= NOW() - INTERVAL '24 hours'
+         AND task_name IS NOT NULL
+       GROUP BY task_name
+       ORDER BY count DESC`
+    );
+
+    reply.send({
+      success: true,
+      data: {
+        period: 'Last 24 hours',
+        verdictDistribution: verdictStats.rows.map((row) => ({
+          verdict: row.verdict,
+          count: parseInt(row.count, 10),
+          avgConfidence: parseFloat(parseFloat(row.avg_confidence).toFixed(2)),
+          avgProcessingTime: parseFloat(parseFloat(row.avg_processing_time).toFixed(2)),
+        })),
+        executionModeDistribution: modeStats.rows.map((row) => ({
+          executionMode: row.execution_mode,
+          count: parseInt(row.count, 10),
+          avgProcessingTime: parseFloat(parseFloat(row.avg_processing_time).toFixed(2)),
+          totalCost: row.total_cost ? parseFloat(parseFloat(row.total_cost).toFixed(4)) : 0,
+        })),
+        errorRate: parseFloat(errorRate.toFixed(2)),
+        whitelistHitRate: parseFloat(whitelistHitRate.toFixed(2)),
+        taskPerformance: taskPerformance.rows.map((row) => ({
+          taskName: row.task_name,
+          count: parseInt(row.count, 10),
+          avgProcessingTime: parseFloat(parseFloat(row.avg_processing_time).toFixed(2)),
+          avgCost: row.avg_cost ? parseFloat(parseFloat(row.avg_cost).toFixed(4)) : 0,
+        })),
+      },
+    });
+  } catch (err) {
+    logger.error({ err }, 'Failed to get system stats');
+    reply.status(500).send({
+      success: false,
+      error: 'Failed to get system statistics',
+    });
+  }
+}
+
+/**
+ * GET /api/admin/debug/health - System health check
+ */
+export async function getHealthCheck(
+  request: FastifyRequest,
+  reply: FastifyReply
+): Promise<void> {
+  try {
+    const checks: any = {
+      database: { status: 'unknown', responseTime: 0 },
+      analyses: { status: 'unknown', recentCount: 0 },
+      errors: { status: 'unknown', errorRate: 0 },
+    };
+
+    // Database check
+    const dbStart = Date.now();
+    try {
+      await query('SELECT 1');
+      checks.database.status = 'healthy';
+      checks.database.responseTime = Date.now() - dbStart;
+    } catch (err) {
+      checks.database.status = 'unhealthy';
+      checks.database.error = (err as Error).message;
+    }
+
+    // Recent analyses check
+    try {
+      const recentResult = await query(
+        `SELECT COUNT(*) as count FROM analyses
+         WHERE created_at >= NOW() - INTERVAL '5 minutes'
+           AND deleted_at IS NULL`
+      );
+      checks.analyses.recentCount = parseInt(recentResult.rows[0].count, 10);
+      checks.analyses.status = 'healthy';
+    } catch (err) {
+      checks.analyses.status = 'unhealthy';
+      checks.analyses.error = (err as Error).message;
+    }
+
+    // Error rate check (last hour)
+    try {
+      const errorResult = await query(
+        `SELECT
+           COUNT(*) FILTER (WHERE error_message IS NOT NULL) as error_count,
+           COUNT(*) as total_count
+         FROM analyses
+         WHERE created_at >= NOW() - INTERVAL '1 hour'
+           AND deleted_at IS NULL`
+      );
+      const errorRow = errorResult.rows[0];
+      const total = parseInt(errorRow.total_count, 10);
+      const errors = parseInt(errorRow.error_count, 10);
+
+      checks.errors.errorRate = total > 0 ? parseFloat(((errors / total) * 100).toFixed(2)) : 0;
+      checks.errors.status = checks.errors.errorRate < 5 ? 'healthy' : 'degraded';
+
+      if (checks.errors.errorRate >= 20) {
+        checks.errors.status = 'unhealthy';
+      }
+    } catch (err) {
+      checks.errors.status = 'unhealthy';
+      checks.errors.error = (err as Error).message;
+    }
+
+    // Overall health
+    const allHealthy = Object.values(checks).every((check: any) => check.status === 'healthy');
+    const anyUnhealthy = Object.values(checks).some((check: any) => check.status === 'unhealthy');
+
+    const overallStatus = anyUnhealthy ? 'unhealthy' : (allHealthy ? 'healthy' : 'degraded');
+
+    reply.send({
+      success: true,
+      data: {
+        status: overallStatus,
+        timestamp: new Date().toISOString(),
+        checks,
+      },
+    });
+  } catch (err) {
+    logger.error({ err }, 'Health check failed');
+    reply.status(500).send({
+      success: false,
+      error: 'Health check failed',
+      data: {
+        status: 'unhealthy',
+        timestamp: new Date().toISOString(),
+      },
+    });
+  }
+}

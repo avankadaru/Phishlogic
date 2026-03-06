@@ -15,6 +15,8 @@ import {
   deleteWhitelistEntry,
   getWhitelistStats,
 } from '../controllers/whitelist.controller.js';
+import { authRoutes } from './auth.routes.js';
+import { adminRoutes } from './admin.routes.js';
 // Schemas are validated in controllers
 
 /**
@@ -29,7 +31,7 @@ export async function registerRoutes(server: FastifyInstance): Promise<void> {
 
   server.post('/api/v1/analyze/email', analyzeEmail);
 
-  // Whitelist endpoints
+  // Whitelist endpoints (public/legacy)
   server.get('/api/v1/whitelist', getWhitelistEntries);
 
   server.get('/api/v1/whitelist/stats', getWhitelistStats);
@@ -39,4 +41,10 @@ export async function registerRoutes(server: FastifyInstance): Promise<void> {
   server.post('/api/v1/whitelist', addWhitelistEntry);
 
   server.delete('/api/v1/whitelist/:id', deleteWhitelistEntry);
+
+  // Authentication routes
+  await server.register(authRoutes, { prefix: '/api' });
+
+  // Admin panel routes
+  await server.register(adminRoutes, { prefix: '/api' });
 }

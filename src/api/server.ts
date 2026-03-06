@@ -9,6 +9,7 @@ import rateLimit from '@fastify/rate-limit';
 import { getConfig } from '../config/index.js';
 import { getLogger } from '../infrastructure/logging/index.js';
 import { registerRoutes } from './routes/index.js';
+import { initDatabase, closeDatabase } from '../infrastructure/database/client.js';
 
 const logger = getLogger();
 
@@ -85,6 +86,19 @@ export async function createServer(): Promise<ReturnType<typeof Fastify>> {
  */
 export async function startServer(): Promise<void> {
   const config = getConfig();
+
+  // Initialize database connection
+  try {
+    initDatabase();
+    logger.info('Database connection initialized');
+  } catch (error) {
+    logger.error({
+      msg: 'Failed to initialize database',
+      error: error instanceof Error ? error.message : String(error),
+    });
+    process.exit(1);
+  }
+
   const server = await createServer();
 
   try {
@@ -104,6 +118,7 @@ export async function startServer(): Promise<void> {
     const shutdown = async (): Promise<void> => {
       logger.info('Shutting down server...');
       await server.close();
+      await closeDatabase();
       logger.info('Server shut down');
       process.exit(0);
     };

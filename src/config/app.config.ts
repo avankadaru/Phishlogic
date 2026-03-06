@@ -81,6 +81,27 @@ const SecurityConfigSchema = z.object({
 });
 
 /**
+ * Database configuration schema
+ */
+const DatabaseConfigSchema = z.object({
+  host: z.string().default('localhost'),
+  port: z.coerce.number().int().min(1).max(65535).default(5432),
+  name: z.string().default('phishlogic'),
+  user: z.string().default('phishlogic'),
+  password: z.string(),
+  poolSize: z.coerce.number().int().min(1).max(100).default(20),
+  ssl: z.coerce.boolean().default(false),
+});
+
+/**
+ * Authentication configuration schema
+ */
+const AuthConfigSchema = z.object({
+  jwtSecret: z.string().min(32),
+  jwtExpiresIn: z.string().default('30d'),
+});
+
+/**
  * Email/SMTP configuration schema
  */
 const EmailConfigSchema = z.object({
@@ -108,6 +129,8 @@ const EmailConfigSchema = z.object({
 const AppConfigSchema = z.object({
   server: ServerConfigSchema,
   logging: LoggingConfigSchema,
+  database: DatabaseConfigSchema,
+  auth: AuthConfigSchema,
   analysis: AnalysisConfigSchema,
   browser: BrowserConfigSchema,
   cache: CacheConfigSchema,
@@ -134,6 +157,20 @@ export function loadConfig(): AppConfig {
     logging: {
       level: process.env['LOG_LEVEL'],
       prettyPrint: process.env['LOG_PRETTY_PRINT'],
+    },
+    database: {
+      host: process.env['DB_HOST'],
+      port: process.env['DB_PORT'],
+      name: process.env['DB_NAME'],
+      user: process.env['DB_USER'],
+      password: process.env['DB_PASSWORD'],
+      poolSize: process.env['DB_POOL_SIZE'],
+      // Properly parse boolean string ("false" string should be false boolean)
+      ssl: process.env['DB_SSL'] === 'true',
+    },
+    auth: {
+      jwtSecret: process.env['JWT_SECRET'],
+      jwtExpiresIn: process.env['JWT_EXPIRES_IN'],
     },
     analysis: {
       timeouts: {
