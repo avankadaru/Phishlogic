@@ -1,6 +1,6 @@
 import { FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
-import { query } from '../../../infrastructure/database/client.js';
+import { getDebugService, DebugQueryOptions } from '../../../core/services/debug.service.js';
 import { getLogger } from '../../../infrastructure/logging/logger.js';
 
 const logger = getLogger();
@@ -24,82 +24,47 @@ export async function getRecentAnalyses(
   try {
     const { limit, offset, verdict, startDate, endDate } = DebugQuerySchema.parse(request.query);
 
-    // Build dynamic WHERE clause
-    const conditions: string[] = ['deleted_at IS NULL'];
-    const values: any[] = [];
-    let paramIndex = 1;
+    // Build query options
+    const options: DebugQueryOptions = {
+      limit,
+      offset,
+      verdict,
+      startDate: startDate ? new Date(startDate) : undefined,
+      endDate: endDate ? new Date(endDate) : undefined,
+    };
 
-    if (verdict) {
-      conditions.push(`verdict = $${paramIndex}`);
-      values.push(verdict);
-      paramIndex++;
-    }
+    // Get data from service
+    const debugService = getDebugService();
+    const result = await debugService.getRecentAnalyses(options);
 
-    if (startDate) {
-      conditions.push(`created_at >= $${paramIndex}`);
-      values.push(startDate);
-      paramIndex++;
-    }
-
-    if (endDate) {
-      conditions.push(`created_at <= $${paramIndex}`);
-      values.push(endDate);
-      paramIndex++;
-    }
-
-    // Add limit and offset
-    values.push(limit, offset);
-
-    // Get analyses
-    const result = await query(
-      `SELECT
-         id, input_type, input_source, verdict, confidence_score,
-         risk_factors, execution_mode, ai_provider, ai_model,
-         processing_time_ms, cost_usd, tokens_used,
-         whitelisted, whitelist_reason, error_message,
-         created_at, tenant_id
-       FROM analyses
-       WHERE ${conditions.join(' AND ')}
-       ORDER BY created_at DESC
-       LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`,
-      values
-    );
-
-    // Get total count
-    const countResult = await query(
-      `SELECT COUNT(*) as total FROM analyses WHERE ${conditions.join(' AND ')}`,
-      values.slice(0, -2) // Remove limit/offset from count query
-    );
-
-    const total = parseInt(countResult.rows[0].total, 10);
-
+    // Transform domain models to API response
     reply.send({
       success: true,
       data: {
-        analyses: result.rows.map((row) => ({
-          id: row.id,
-          inputType: row.input_type,
-          inputSource: row.input_source,
-          verdict: row.verdict,
-          confidenceScore: parseFloat(row.confidence_score),
-          riskFactors: row.risk_factors || [],
-          executionMode: row.execution_mode,
-          aiProvider: row.ai_provider,
-          aiModel: row.ai_model,
-          processingTimeMs: parseInt(row.processing_time_ms, 10),
-          costUsd: row.cost_usd ? parseFloat(row.cost_usd) : null,
-          tokensUsed: row.tokens_used ? parseInt(row.tokens_used, 10) : null,
-          whitelisted: row.whitelisted,
-          whitelistReason: row.whitelist_reason,
-          errorMessage: row.error_message,
-          createdAt: row.created_at,
-          tenantId: row.tenant_id,
+        analyses: result.items.map((analysis) => ({
+          id: analysis.id,
+          inputType: analysis.inputType,
+          inputSource: analysis.inputSource,
+          verdict: analysis.verdict,
+          confidenceScore: analysis.confidence,
+          riskFactors: analysis.redFlags,
+          executionMode: analysis.executionMode,
+          aiProvider: analysis.aiMetadata?.provider,
+          aiModel: analysis.aiMetadata?.model,
+          processingTimeMs: analysis.durationMs,
+          costUsd: analysis.aiMetadata?.costUsd,
+          tokensUsed: analysis.aiMetadata?.tokens?.total,
+          whitelisted: analysis.whitelisted,
+          whitelistReason: analysis.whitelistReason,
+          errorMessage: analysis.errorDetails?.message,
+          createdAt: analysis.createdAt,
+          tenantId: analysis.tenantId,
         })),
         pagination: {
-          total,
-          limit,
-          offset,
-          hasMore: offset + limit < total,
+          total: result.total,
+          limit: result.limit,
+          offset: result.offset,
+          hasMore: result.hasMore,
         },
       },
     });
@@ -131,12 +96,11 @@ export async function getAnalysisById(
   try {
     const { id } = request.params;
 
-    const result = await query(
-      `SELECT * FROM analyses WHERE id = $1 AND deleted_at IS NULL`,
-      [id]
-    );
+    // Get analysis from service
+    const debugService = getDebugService();
+    const analysis = await debugService.getAnalysisById(id);
 
-    if (result.rows.length === 0) {
+    if (!analysis) {
       reply.status(404).send({
         success: false,
         error: 'Analysis not found',
@@ -144,35 +108,36 @@ export async function getAnalysisById(
       return;
     }
 
-    const analysis = result.rows[0];
-
+    // Transform domain model to API response
     reply.send({
       success: true,
       data: {
         id: analysis.id,
-        inputType: analysis.input_type,
-        inputSource: analysis.input_source,
-        inputData: analysis.input_data, // Full input data
+        inputType: analysis.inputType,
+        inputSource: analysis.inputSource,
+        inputData: analysis.inputData,
         verdict: analysis.verdict,
-        confidenceScore: parseFloat(analysis.confidence_score),
-        riskScore: parseFloat(analysis.risk_score),
-        riskFactors: analysis.risk_factors || [],
-        analyzerResults: analysis.analyzer_results || [], // Individual analyzer outputs
-        executionMode: analysis.execution_mode,
-        taskName: analysis.task_name,
-        aiProvider: analysis.ai_provider,
-        aiModel: analysis.ai_model,
-        aiPrompt: analysis.ai_prompt, // AI prompt used
-        aiResponse: analysis.ai_response, // AI response received
-        processingTimeMs: parseInt(analysis.processing_time_ms, 10),
-        costUsd: analysis.cost_usd ? parseFloat(analysis.cost_usd) : null,
-        tokensUsed: analysis.tokens_used ? parseInt(analysis.tokens_used, 10) : null,
+        confidenceScore: analysis.confidence,
+        score: analysis.score,
+        riskFactors: analysis.redFlags,
+        signals: analysis.signals,
+        analyzersRun: analysis.analyzersRun,
+        executionSteps: analysis.executionSteps,
+        executionMode: analysis.executionMode,
+        aiProvider: analysis.aiMetadata?.provider,
+        aiModel: analysis.aiMetadata?.model,
+        aiMetadata: analysis.aiMetadata, // Full AI metadata
+        timingMetadata: analysis.timingMetadata, // Full timing metadata
+        processingTimeMs: analysis.durationMs,
+        costUsd: analysis.aiMetadata?.costUsd,
+        tokensUsed: analysis.aiMetadata?.tokens?.total,
         whitelisted: analysis.whitelisted,
-        whitelistReason: analysis.whitelist_reason,
-        errorMessage: analysis.error_message,
-        metadata: analysis.metadata || {},
-        createdAt: analysis.created_at,
-        tenantId: analysis.tenant_id,
+        whitelistReason: analysis.whitelistReason,
+        errorMessage: analysis.errorDetails?.message,
+        errorDetails: analysis.errorDetails, // Full error details
+        createdAt: analysis.createdAt,
+        analyzedAt: analysis.analyzedAt,
+        tenantId: analysis.tenantId,
       },
     });
   } catch (err) {
@@ -194,64 +159,39 @@ export async function getRecentErrors(
   try {
     const { limit, offset, startDate, endDate } = DebugQuerySchema.parse(request.query);
 
-    // Build dynamic WHERE clause
-    const conditions: string[] = ['error_message IS NOT NULL', 'deleted_at IS NULL'];
-    const values: any[] = [];
-    let paramIndex = 1;
+    // Build query options
+    const options: DebugQueryOptions = {
+      limit,
+      offset,
+      startDate: startDate ? new Date(startDate) : undefined,
+      endDate: endDate ? new Date(endDate) : undefined,
+    };
 
-    if (startDate) {
-      conditions.push(`created_at >= $${paramIndex}`);
-      values.push(startDate);
-      paramIndex++;
-    }
+    // Get errors from service
+    const debugService = getDebugService();
+    const result = await debugService.getRecentErrors(options);
 
-    if (endDate) {
-      conditions.push(`created_at <= $${paramIndex}`);
-      values.push(endDate);
-      paramIndex++;
-    }
-
-    values.push(limit, offset);
-
-    // Get error analyses
-    const result = await query(
-      `SELECT
-         id, input_type, input_source, verdict, execution_mode,
-         task_name, error_message, processing_time_ms, created_at
-       FROM analyses
-       WHERE ${conditions.join(' AND ')}
-       ORDER BY created_at DESC
-       LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`,
-      values
-    );
-
-    // Get total error count
-    const countResult = await query(
-      `SELECT COUNT(*) as total FROM analyses WHERE ${conditions.join(' AND ')}`,
-      values.slice(0, -2)
-    );
-
-    const total = parseInt(countResult.rows[0].total, 10);
-
+    // Transform domain models to API response
     reply.send({
       success: true,
       data: {
-        errors: result.rows.map((row) => ({
-          id: row.id,
-          inputType: row.input_type,
-          inputSource: row.input_source,
-          verdict: row.verdict,
-          executionMode: row.execution_mode,
-          taskName: row.task_name,
-          errorMessage: row.error_message,
-          processingTimeMs: parseInt(row.processing_time_ms, 10),
-          createdAt: row.created_at,
+        errors: result.items.map((analysis) => ({
+          id: analysis.id,
+          inputType: analysis.inputType,
+          inputSource: analysis.inputSource,
+          verdict: analysis.verdict,
+          executionMode: analysis.executionMode,
+          errorMessage: analysis.errorDetails?.message,
+          errorStackTrace: analysis.errorDetails?.stackTrace,
+          errorContext: analysis.errorDetails?.context,
+          processingTimeMs: analysis.durationMs,
+          createdAt: analysis.createdAt,
         })),
         pagination: {
-          total,
-          limit,
-          offset,
-          hasMore: offset + limit < total,
+          total: result.total,
+          limit: result.limit,
+          offset: result.offset,
+          hasMore: result.hasMore,
         },
       },
     });
@@ -281,101 +221,29 @@ export async function getSystemStats(
   reply: FastifyReply
 ): Promise<void> {
   try {
-    // Get verdict distribution
-    const verdictStats = await query(
-      `SELECT
-         verdict,
-         COUNT(*) as count,
-         AVG(confidence_score) as avg_confidence,
-         AVG(processing_time_ms) as avg_processing_time
-       FROM analyses
-       WHERE deleted_at IS NULL
-         AND created_at >= NOW() - INTERVAL '24 hours'
-       GROUP BY verdict`
-    );
+    // Get stats from service
+    const debugService = getDebugService();
+    const stats = await debugService.getSystemStats(24); // Last 24 hours
 
-    // Get execution mode distribution
-    const modeStats = await query(
-      `SELECT
-         execution_mode,
-         COUNT(*) as count,
-         AVG(processing_time_ms) as avg_processing_time,
-         SUM(cost_usd) as total_cost
-       FROM analyses
-       WHERE deleted_at IS NULL
-         AND created_at >= NOW() - INTERVAL '24 hours'
-       GROUP BY execution_mode`
-    );
-
-    // Get error rate
-    const errorStats = await query(
-      `SELECT
-         COUNT(*) FILTER (WHERE error_message IS NOT NULL) as error_count,
-         COUNT(*) as total_count
-       FROM analyses
-       WHERE deleted_at IS NULL
-         AND created_at >= NOW() - INTERVAL '24 hours'`
-    );
-
-    const errorRow = errorStats.rows[0];
-    const errorRate = parseInt(errorRow.total_count, 10) > 0
-      ? (parseInt(errorRow.error_count, 10) / parseInt(errorRow.total_count, 10)) * 100
-      : 0;
-
-    // Get whitelist hit rate
-    const whitelistStats = await query(
-      `SELECT
-         COUNT(*) FILTER (WHERE whitelisted = true) as whitelisted_count,
-         COUNT(*) as total_count
-       FROM analyses
-       WHERE deleted_at IS NULL
-         AND created_at >= NOW() - INTERVAL '24 hours'`
-    );
-
-    const whitelistRow = whitelistStats.rows[0];
-    const whitelistHitRate = parseInt(whitelistRow.total_count, 10) > 0
-      ? (parseInt(whitelistRow.whitelisted_count, 10) / parseInt(whitelistRow.total_count, 10)) * 100
-      : 0;
-
-    // Get task performance
-    const taskPerformance = await query(
-      `SELECT
-         task_name,
-         COUNT(*) as count,
-         AVG(processing_time_ms) as avg_processing_time,
-         AVG(cost_usd) as avg_cost
-       FROM analyses
-       WHERE deleted_at IS NULL
-         AND created_at >= NOW() - INTERVAL '24 hours'
-         AND task_name IS NOT NULL
-       GROUP BY task_name
-       ORDER BY count DESC`
-    );
-
+    // Transform to API response
     reply.send({
       success: true,
       data: {
-        period: 'Last 24 hours',
-        verdictDistribution: verdictStats.rows.map((row) => ({
-          verdict: row.verdict,
-          count: parseInt(row.count, 10),
-          avgConfidence: parseFloat(parseFloat(row.avg_confidence).toFixed(2)),
-          avgProcessingTime: parseFloat(parseFloat(row.avg_processing_time).toFixed(2)),
+        period: stats.period,
+        verdictDistribution: stats.verdictDistribution.map((item) => ({
+          verdict: item.verdict,
+          count: item.count,
+          avgConfidence: parseFloat(item.avgConfidence.toFixed(2)),
+          avgProcessingTime: parseFloat(item.avgProcessingTime.toFixed(2)),
         })),
-        executionModeDistribution: modeStats.rows.map((row) => ({
-          executionMode: row.execution_mode,
-          count: parseInt(row.count, 10),
-          avgProcessingTime: parseFloat(parseFloat(row.avg_processing_time).toFixed(2)),
-          totalCost: row.total_cost ? parseFloat(parseFloat(row.total_cost).toFixed(4)) : 0,
+        executionModeDistribution: stats.executionModeDistribution.map((item) => ({
+          executionMode: item.executionMode,
+          count: item.count,
+          avgProcessingTime: parseFloat(item.avgProcessingTime.toFixed(2)),
+          totalCost: parseFloat(item.totalCost.toFixed(4)),
         })),
-        errorRate: parseFloat(errorRate.toFixed(2)),
-        whitelistHitRate: parseFloat(whitelistHitRate.toFixed(2)),
-        taskPerformance: taskPerformance.rows.map((row) => ({
-          taskName: row.task_name,
-          count: parseInt(row.count, 10),
-          avgProcessingTime: parseFloat(parseFloat(row.avg_processing_time).toFixed(2)),
-          avgCost: row.avg_cost ? parseFloat(parseFloat(row.avg_cost).toFixed(4)) : 0,
-        })),
+        errorRate: parseFloat(stats.errorRate.toFixed(2)),
+        whitelistHitRate: parseFloat(stats.whitelistHitRate.toFixed(2)),
       },
     });
   } catch (err) {
@@ -395,75 +263,13 @@ export async function getHealthCheck(
   reply: FastifyReply
 ): Promise<void> {
   try {
-    const checks: any = {
-      database: { status: 'unknown', responseTime: 0 },
-      analyses: { status: 'unknown', recentCount: 0 },
-      errors: { status: 'unknown', errorRate: 0 },
-    };
-
-    // Database check
-    const dbStart = Date.now();
-    try {
-      await query('SELECT 1');
-      checks.database.status = 'healthy';
-      checks.database.responseTime = Date.now() - dbStart;
-    } catch (err) {
-      checks.database.status = 'unhealthy';
-      checks.database.error = (err as Error).message;
-    }
-
-    // Recent analyses check
-    try {
-      const recentResult = await query(
-        `SELECT COUNT(*) as count FROM analyses
-         WHERE created_at >= NOW() - INTERVAL '5 minutes'
-           AND deleted_at IS NULL`
-      );
-      checks.analyses.recentCount = parseInt(recentResult.rows[0].count, 10);
-      checks.analyses.status = 'healthy';
-    } catch (err) {
-      checks.analyses.status = 'unhealthy';
-      checks.analyses.error = (err as Error).message;
-    }
-
-    // Error rate check (last hour)
-    try {
-      const errorResult = await query(
-        `SELECT
-           COUNT(*) FILTER (WHERE error_message IS NOT NULL) as error_count,
-           COUNT(*) as total_count
-         FROM analyses
-         WHERE created_at >= NOW() - INTERVAL '1 hour'
-           AND deleted_at IS NULL`
-      );
-      const errorRow = errorResult.rows[0];
-      const total = parseInt(errorRow.total_count, 10);
-      const errors = parseInt(errorRow.error_count, 10);
-
-      checks.errors.errorRate = total > 0 ? parseFloat(((errors / total) * 100).toFixed(2)) : 0;
-      checks.errors.status = checks.errors.errorRate < 5 ? 'healthy' : 'degraded';
-
-      if (checks.errors.errorRate >= 20) {
-        checks.errors.status = 'unhealthy';
-      }
-    } catch (err) {
-      checks.errors.status = 'unhealthy';
-      checks.errors.error = (err as Error).message;
-    }
-
-    // Overall health
-    const allHealthy = Object.values(checks).every((check: any) => check.status === 'healthy');
-    const anyUnhealthy = Object.values(checks).some((check: any) => check.status === 'unhealthy');
-
-    const overallStatus = anyUnhealthy ? 'unhealthy' : (allHealthy ? 'healthy' : 'degraded');
+    // Get health status from service
+    const debugService = getDebugService();
+    const health = await debugService.getHealthCheck();
 
     reply.send({
       success: true,
-      data: {
-        status: overallStatus,
-        timestamp: new Date().toISOString(),
-        checks,
-      },
+      data: health,
     });
   } catch (err) {
     logger.error({ err }, 'Health check failed');

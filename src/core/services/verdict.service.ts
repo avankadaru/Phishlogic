@@ -11,6 +11,7 @@ import type {
   AlertLevel,
 } from '../models/analysis-result.js';
 import type { AppConfig } from '../../config/app.config.js';
+import { getConfig } from '../../config/index.js';
 import { getLogger } from '../../infrastructure/logging/index.js';
 
 const logger = getLogger();
@@ -274,4 +275,20 @@ export class VerdictService {
 
     return parts.join(' ');
   }
+}
+
+/**
+ * Singleton instance
+ */
+let verdictServiceInstance: VerdictService | null = null;
+
+/**
+ * Get or create verdict service instance
+ */
+export function getVerdictService(): VerdictService {
+  if (!verdictServiceInstance) {
+    const config = getConfig();
+    verdictServiceInstance = new VerdictService(config);
+  }
+  return verdictServiceInstance;
 }

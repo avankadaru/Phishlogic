@@ -2,6 +2,9 @@ import { Pool, QueryResult, QueryResultRow, PoolConfig } from 'pg';
 import { getConfig } from '../../config/app.config.js';
 import { getLogger } from '../logging/logger.js';
 
+// Re-export types for use in repositories
+export type { QueryResult, QueryResultRow };
+
 const logger = getLogger();
 let pool: Pool | null = null;
 

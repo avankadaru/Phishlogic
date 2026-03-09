@@ -5,7 +5,8 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { UrlAnalysisRequest, EmailAnalysisRequest } from '../schemas/analysis.schema.js';
 import { RawUrlAdapter, RawEmailAdapter } from '../../adapters/input/index.js';
-import { AnalysisEngine } from '../../core/engine/index.js';
+import { getAnalysisEngine } from '../../core/engine/analysis.engine.js';
+import { getAnalyzerRegistry } from '../../core/engine/analyzer-registry.js';
 import {
   UrlEntropyAnalyzer,
   SpfAnalyzer,
@@ -20,24 +21,28 @@ import { getLogger } from '../../infrastructure/logging/index.js';
 
 const logger = getLogger();
 
-// Initialize analyzers and engine
-const engine = new AnalysisEngine();
+// Initialize analyzer registry with all analyzers
+const analyzerRegistry = getAnalyzerRegistry();
 
-// Register static analyzers
-engine.registerAnalyzers([
+const staticAnalyzers = [
   new UrlEntropyAnalyzer(),
   new SpfAnalyzer(),
   new DkimAnalyzer(),
   new HeaderAnalyzer(),
-]);
+];
 
-// Register dynamic analyzers
-engine.registerAnalyzers([
+const dynamicAnalyzers = [
   new RedirectAnalyzer(),
   new FormAnalyzer(),
-]);
+];
 
-logger.info('Analysis engine initialized with all analyzers');
+// Register analyzers (used by NativeExecutionStrategy)
+analyzerRegistry.registerMany([...staticAnalyzers, ...dynamicAnalyzers]);
+
+// Get singleton engine instance (strategies are initialized in constructor)
+const engine = getAnalysisEngine();
+
+logger.info('Analysis engine initialized with execution strategies and analyzers');
 
 /**
  * Analyze URL endpoint
@@ -61,6 +66,10 @@ export async function analyzeUrl(
     // Adapt input
     const normalizedInput = await adapter.adapt(request.body);
 
+    // Pass through analysis ID and UI timestamp from request
+    normalizedInput.analysisId = request.body.analysisId;
+    normalizedInput.uiTimestamp = request.body.uiTimestamp;
+
     // Analyze
     const result = await engine.analyze(normalizedInput);
 
@@ -69,6 +78,7 @@ export async function analyzeUrl(
       url: request.body.url,
       verdict: result.verdict,
       score: result.score,
+      analysisId: result.metadata.analysisId,
     });
 
     return reply.status(200).send(result);
@@ -107,6 +117,10 @@ export async function analyzeEmail(
     // Adapt input
     const normalizedInput = await adapter.adapt(request.body);
 
+    // Pass through analysis ID and UI timestamp from request
+    normalizedInput.analysisId = request.body.analysisId;
+    normalizedInput.uiTimestamp = request.body.uiTimestamp;
+
     // Analyze
     const result = await engine.analyze(normalizedInput);
 
@@ -114,6 +128,7 @@ export async function analyzeEmail(
       msg: 'Email analysis completed',
       verdict: result.verdict,
       score: result.score,
+      analysisId: result.metadata.analysisId,
     });
 
     return reply.status(200).send(result);

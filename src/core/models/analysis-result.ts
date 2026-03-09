@@ -89,7 +89,7 @@ export interface ExecutionStep {
   step: string;
 
   /** Timestamp when step started */
-  startedAt: Date;
+  startedAt?: Date;
 
   /** Timestamp when step completed */
   completedAt?: Date;
@@ -98,10 +98,16 @@ export interface ExecutionStep {
   duration?: number;
 
   /** Status of the step */
-  status: 'started' | 'completed' | 'failed' | 'skipped';
+  status?: 'started' | 'completed' | 'failed' | 'skipped';
 
   /** Error message if failed */
   error?: string;
+
+  /** Stack trace if failed */
+  stackTrace?: string;
+
+  /** Error context if failed */
+  errorContext?: Record<string, unknown>;
 
   /** Additional context */
   context?: Record<string, unknown>;

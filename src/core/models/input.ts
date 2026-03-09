@@ -86,6 +86,12 @@ export interface NormalizedInput {
 
   /** Input data (URL or Email) */
   data: UrlInput | EmailInput;
+
+  /** Optional analysis ID from UI (for end-to-end tracking) */
+  analysisId?: string;
+
+  /** Optional UI timestamp (when user initiated the request) */
+  uiTimestamp?: number;
 }
 
 /**

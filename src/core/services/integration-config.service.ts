@@ -1,0 +1,244 @@
+/**
+ * Integration Configuration Service
+ *
+ * Loads execution mode configuration from database for integrations (Gmail, Chrome).
+ * Provides AI model configuration and execution settings.
+ *
+ * Design:
+ * - Repository Pattern (no direct DB access)
+ * - Caching for performance
+ * - Singleton pattern
+ */
+
+import { getLogger } from '../../infrastructure/logging/logger.js';
+import { query } from '../../infrastructure/database/client.js';
+
+const logger = getLogger();
+
+/**
+ * Integration execution configuration
+ */
+export interface IntegrationConfig {
+  integrationId: string;
+  integrationName: string;
+  executionMode: 'native' | 'hybrid' | 'ai';
+  aiModelId?: string;
+  aiProvider?: string;
+  aiModel?: string;
+  aiTemperature?: number;
+  aiMaxTokens?: number;
+  aiTimeout?: number;
+  fallbackToNative?: boolean;
+  isActive: boolean;
+}
+
+/**
+ * Integration Config Service
+ */
+export class IntegrationConfigService {
+  private configCache: Map<string, IntegrationConfig> = new Map();
+  private cacheExpiry: Map<string, number> = new Map();
+  private readonly CACHE_TTL_MS = 60000; // 1 minute cache
+
+  /**
+   * Get integration configuration by name
+   */
+  async getConfig(integrationName: string): Promise<IntegrationConfig | null> {
+    // Check cache first
+    const cached = this.getCachedConfig(integrationName);
+    if (cached) {
+      return cached;
+    }
+
+    try {
+      // Load from database
+      const config = await this.loadConfigFromDB(integrationName);
+
+      if (config) {
+        // Cache the result
+        this.setCachedConfig(integrationName, config);
+      }
+
+      return config;
+    } catch (error) {
+      logger.error({
+        msg: 'Failed to load integration config',
+        integrationName,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  }
+
+  /**
+   * Load configuration from database
+   */
+  private async loadConfigFromDB(integrationName: string): Promise<IntegrationConfig | null> {
+    const sql = `
+      SELECT
+        it.id as integration_id,
+        i.name as integration_name,
+        it.execution_mode,
+        it.ai_model_id,
+        it.fallback_to_native,
+        it.is_active,
+        am.provider as ai_provider,
+        am.model as ai_model,
+        am.temperature as ai_temperature,
+        am.max_tokens as ai_max_tokens,
+        am.timeout_ms as ai_timeout
+      FROM integration_tasks it
+      INNER JOIN integrations i ON it.integration_id = i.id
+      LEFT JOIN ai_model_configs am ON it.ai_model_id = am.id
+      WHERE i.name = $1
+        AND it.deleted_at IS NULL
+        AND i.deleted_at IS NULL
+      LIMIT 1
+    `;
+
+    const result = await query<any>(sql, [integrationName]);
+
+    if (result.rows.length === 0) {
+      logger.debug({
+        msg: 'No integration config found',
+        integrationName,
+      });
+      return null;
+    }
+
+    const row = result.rows[0];
+
+    const config: IntegrationConfig = {
+      integrationId: row.integration_id,
+      integrationName: row.integration_name,
+      executionMode: row.execution_mode || 'native',
+      aiModelId: row.ai_model_id,
+      aiProvider: row.ai_provider,
+      aiModel: row.ai_model,
+      aiTemperature: row.ai_temperature,
+      aiMaxTokens: row.ai_max_tokens,
+      aiTimeout: row.ai_timeout,
+      fallbackToNative: row.fallback_to_native !== false,
+      isActive: row.is_active !== false,
+    };
+
+    logger.debug({
+      msg: 'Integration config loaded',
+      integrationName,
+      executionMode: config.executionMode,
+      hasAI: !!config.aiModelId,
+    });
+
+    return config;
+  }
+
+  /**
+   * Get cached configuration if valid
+   */
+  private getCachedConfig(integrationName: string): IntegrationConfig | null {
+    const config = this.configCache.get(integrationName);
+    const expiry = this.cacheExpiry.get(integrationName);
+
+    if (config && expiry && Date.now() < expiry) {
+      logger.debug({
+        msg: 'Integration config retrieved from cache',
+        integrationName,
+      });
+      return config;
+    }
+
+    // Cache expired or not found
+    return null;
+  }
+
+  /**
+   * Set cached configuration
+   */
+  private setCachedConfig(integrationName: string, config: IntegrationConfig): void {
+    this.configCache.set(integrationName, config);
+    this.cacheExpiry.set(integrationName, Date.now() + this.CACHE_TTL_MS);
+  }
+
+  /**
+   * Clear cache for specific integration
+   */
+  clearCache(integrationName?: string): void {
+    if (integrationName) {
+      this.configCache.delete(integrationName);
+      this.cacheExpiry.delete(integrationName);
+      logger.debug({
+        msg: 'Integration config cache cleared',
+        integrationName,
+      });
+    } else {
+      this.configCache.clear();
+      this.cacheExpiry.clear();
+      logger.debug('All integration config cache cleared');
+    }
+  }
+
+  /**
+   * Get all active integration configurations
+   */
+  async getAllActiveConfigs(): Promise<IntegrationConfig[]> {
+    const sql = `
+      SELECT
+        it.id as integration_id,
+        i.name as integration_name,
+        it.execution_mode,
+        it.ai_model_id,
+        it.fallback_to_native,
+        it.is_active,
+        am.provider as ai_provider,
+        am.model as ai_model,
+        am.temperature as ai_temperature,
+        am.max_tokens as ai_max_tokens,
+        am.timeout_ms as ai_timeout
+      FROM integration_tasks it
+      INNER JOIN integrations i ON it.integration_id = i.id
+      LEFT JOIN ai_model_configs am ON it.ai_model_id = am.id
+      WHERE it.is_active = true
+        AND it.deleted_at IS NULL
+        AND i.deleted_at IS NULL
+      ORDER BY i.name
+    `;
+
+    const result = await query<any>(sql);
+
+    return result.rows.map((row) => ({
+      integrationId: row.integration_id,
+      integrationName: row.integration_name,
+      executionMode: row.execution_mode || 'native',
+      aiModelId: row.ai_model_id,
+      aiProvider: row.ai_provider,
+      aiModel: row.ai_model,
+      aiTemperature: row.ai_temperature,
+      aiMaxTokens: row.ai_max_tokens,
+      aiTimeout: row.ai_timeout,
+      fallbackToNative: row.fallback_to_native !== false,
+      isActive: row.is_active !== false,
+    }));
+  }
+}
+
+/**
+ * Singleton instance
+ */
+let integrationConfigServiceInstance: IntegrationConfigService | null = null;
+
+/**
+ * Get Integration Config Service instance
+ */
+export function getIntegrationConfigService(): IntegrationConfigService {
+  if (!integrationConfigServiceInstance) {
+    integrationConfigServiceInstance = new IntegrationConfigService();
+  }
+  return integrationConfigServiceInstance;
+}
+
+/**
+ * Reset service (for testing)
+ */
+export function resetIntegrationConfigService(): void {
+  integrationConfigServiceInstance = null;
+}

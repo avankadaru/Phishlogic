@@ -15,6 +15,8 @@ export const UrlAnalysisRequestSchema = z.object({
       userAgent: z.string().optional(),
     })
     .optional(),
+  analysisId: z.string().uuid().optional(),
+  uiTimestamp: z.number().int().positive().optional(),
 });
 
 export type UrlAnalysisRequest = z.infer<typeof UrlAnalysisRequestSchema>;
@@ -24,6 +26,8 @@ export type UrlAnalysisRequest = z.infer<typeof UrlAnalysisRequestSchema>;
  */
 export const EmailAnalysisRequestSchema = z.object({
   rawEmail: z.string().min(1, 'Email content is required').max(10 * 1024 * 1024, 'Email too large (max 10MB)'),
+  analysisId: z.string().uuid().optional(),
+  uiTimestamp: z.number().int().positive().optional(),
 });
 
 export type EmailAnalysisRequest = z.infer<typeof EmailAnalysisRequestSchema>;
