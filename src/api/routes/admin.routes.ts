@@ -69,7 +69,40 @@ import {
   getAllIntegrationTasks,
   getIntegrationTask,
   updateIntegrationTask,
+  getIntegrationAnalyzers,
+  addIntegrationAnalyzer,
+  updateIntegrationAnalyzer,
+  deleteIntegrationAnalyzer,
 } from '../controllers/admin/integration-tasks.controller.js';
+
+import {
+  listCredentials,
+  getCredential,
+  createCredential,
+  updateCredential,
+  deleteCredential,
+  testCredential,
+} from '../controllers/admin/credentials.controller.js';
+
+import {
+  getAllTasks,
+  getTask,
+  createTask,
+  updateTask,
+  deleteTask,
+  getTaskAnalyzers,
+} from '../controllers/admin/tasks.controller.js';
+
+import {
+  getAllAnalyzers,
+  getAnalyzer,
+  createAnalyzer,
+  updateAnalyzer,
+  deleteAnalyzer,
+  getAnalyzerTasks,
+  assignAnalyzerToTask,
+  removeAnalyzerFromTask,
+} from '../controllers/admin/analyzers.controller.js';
 
 /**
  * Admin panel routes
@@ -84,6 +117,12 @@ export async function adminRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.get('/admin/integration-tasks', getAllIntegrationTasks);
   fastify.get('/admin/integration-tasks/:integrationName', getIntegrationTask);
   fastify.put('/admin/integration-tasks/:integrationName', updateIntegrationTask);
+
+  // Integration Analyzer Routes (CRUD for analyzers within an integration)
+  fastify.get('/admin/integration-tasks/:integrationName/analyzers', getIntegrationAnalyzers);
+  fastify.post('/admin/integration-tasks/:integrationName/analyzers', addIntegrationAnalyzer);
+  fastify.put('/admin/integration-tasks/:integrationName/analyzers/:analyzerName', updateIntegrationAnalyzer);
+  fastify.delete('/admin/integration-tasks/:integrationName/analyzers/:analyzerName', deleteIntegrationAnalyzer);
 
   // Backward compatibility alias
   fastify.get('/admin/tasks', getAllIntegrationTasks);
@@ -134,6 +173,32 @@ export async function adminRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.put('/admin/ai-models/:id', updateAIModel);
   fastify.delete('/admin/ai-models/:id', deleteAIModel);
   fastify.post('/admin/ai-models/:id/test', testAIModel);
+
+  // API Credentials Management Routes
+  fastify.get('/admin/credentials', listCredentials);
+  fastify.get('/admin/credentials/:id', getCredential);
+  fastify.post('/admin/credentials', createCredential);
+  fastify.put('/admin/credentials/:id', updateCredential);
+  fastify.delete('/admin/credentials/:id', deleteCredential);
+  fastify.post('/admin/credentials/:id/test', testCredential);
+
+  // Task Definitions Routes
+  fastify.get('/admin/tasks/definitions', getAllTasks);
+  fastify.get('/admin/tasks/definitions/:taskName', getTask);
+  fastify.post('/admin/tasks/definitions', createTask);
+  fastify.put('/admin/tasks/definitions/:taskName', updateTask);
+  fastify.delete('/admin/tasks/definitions/:taskName', deleteTask);
+  fastify.get('/admin/tasks/definitions/:taskName/analyzers', getTaskAnalyzers);
+
+  // Analyzer Definitions Routes
+  fastify.get('/admin/analyzers', getAllAnalyzers);
+  fastify.get('/admin/analyzers/:analyzerName', getAnalyzer);
+  fastify.post('/admin/analyzers', createAnalyzer);
+  fastify.put('/admin/analyzers/:analyzerName', updateAnalyzer);
+  fastify.delete('/admin/analyzers/:analyzerName', deleteAnalyzer);
+  fastify.get('/admin/analyzers/:analyzerName/tasks', getAnalyzerTasks);
+  fastify.post('/admin/analyzers/:analyzerName/assign-task', assignAnalyzerToTask);
+  fastify.delete('/admin/analyzers/:analyzerName/tasks/:taskName', removeAnalyzerFromTask);
 
   // Support Request Routes
   fastify.post('/admin/support', createSupportRequest);

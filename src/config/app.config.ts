@@ -42,14 +42,24 @@ const AnalysisConfigSchema = z.object({
     malicious: z.coerce.number().min(0).max(1).default(0.7),
     suspicious: z.coerce.number().min(0).max(1).default(0.4),
   }),
-  weights: z.record(z.string(), z.number()).default({
-    spf: 1.5,
-    dkim: 1.5,
-    urlEntropy: 1.0,
-    header: 1.0,
-    redirect: 1.3,
-    form: 1.8,
-    domainReputation: 1.2,
+  // Enterprise-grade analyzer weights (configurable per analyzer)
+  analyzerWeights: z.object({
+    linkReputation: z.coerce.number().min(0.5).max(3.0).default(2.5),
+    attachment: z.coerce.number().min(0.5).max(3.0).default(2.3),
+    senderReputation: z.coerce.number().min(0.5).max(3.0).default(1.8),
+    contentAnalysis: z.coerce.number().min(0.5).max(3.0).default(1.6),
+    redirect: z.coerce.number().min(0.5).max(3.0).default(1.5),
+    form: z.coerce.number().min(0.5).max(3.0).default(1.0),
+    spf: z.coerce.number().min(0.5).max(3.0).default(1.4),
+    dkim: z.coerce.number().min(0.5).max(3.0).default(1.4),
+    urlEntropy: z.coerce.number().min(0.5).max(3.0).default(1.2),
+  }),
+  // Context-aware signal adjustments
+  signalAdjustments: z.object({
+    positiveSignalValue: z.coerce.number().min(0).max(0.5).default(0.2),
+    contextPositiveReduction: z.coerce.number().min(0).max(1).default(0.7),
+    contextThreatIntelBoost: z.coerce.number().min(0).max(0.5).default(0.2),
+    contextCriticalBoost: z.coerce.number().min(0).max(0.5).default(0.3),
   }),
 });
 
@@ -124,6 +134,15 @@ const EmailConfigSchema = z.object({
 });
 
 /**
+ * Whitelist trust level configuration schema
+ */
+const WhitelistConfigSchema = z.object({
+  defaultTrustLevel: z.enum(['high', 'medium', 'low']).default('high'),
+  trustLevelEnabled: z.coerce.boolean().default(true),
+  trustLevelLogging: z.coerce.boolean().default(true),
+});
+
+/**
  * Complete application configuration schema
  */
 const AppConfigSchema = z.object({
@@ -136,6 +155,7 @@ const AppConfigSchema = z.object({
   cache: CacheConfigSchema,
   security: SecurityConfigSchema,
   email: EmailConfigSchema,
+  whitelist: WhitelistConfigSchema,
 });
 
 /**
@@ -179,10 +199,26 @@ export function loadConfig(): AppConfig {
         total: process.env['ANALYSIS_TIMEOUT'],
       },
       thresholds: {
-        malicious: process.env['MALICIOUS_THRESHOLD'],
-        suspicious: process.env['SUSPICIOUS_THRESHOLD'],
+        malicious: process.env['VERDICT_THRESHOLD_MALICIOUS'],
+        suspicious: process.env['VERDICT_THRESHOLD_SUSPICIOUS'],
       },
-      weights: {}, // Use defaults
+      analyzerWeights: {
+        linkReputation: process.env['ANALYZER_WEIGHT_LINK_REPUTATION'],
+        attachment: process.env['ANALYZER_WEIGHT_ATTACHMENT'],
+        senderReputation: process.env['ANALYZER_WEIGHT_SENDER_REPUTATION'],
+        contentAnalysis: process.env['ANALYZER_WEIGHT_CONTENT_ANALYSIS'],
+        redirect: process.env['ANALYZER_WEIGHT_REDIRECT'],
+        form: process.env['ANALYZER_WEIGHT_FORM'],
+        spf: process.env['ANALYZER_WEIGHT_SPF'],
+        dkim: process.env['ANALYZER_WEIGHT_DKIM'],
+        urlEntropy: process.env['ANALYZER_WEIGHT_URL_ENTROPY'],
+      },
+      signalAdjustments: {
+        positiveSignalValue: process.env['POSITIVE_SIGNAL_VALUE'],
+        contextPositiveReduction: process.env['CONTEXT_POSITIVE_REDUCTION'],
+        contextThreatIntelBoost: process.env['CONTEXT_THREAT_INTEL_BOOST'],
+        contextCriticalBoost: process.env['CONTEXT_CRITICAL_BOOST'],
+      },
     },
     browser: {
       poolSize: process.env['BROWSER_POOL_SIZE'],
@@ -213,6 +249,11 @@ export function loadConfig(): AppConfig {
       alertThreshold: process.env['EMAIL_ALERT_THRESHOLD'],
       batchMode: process.env['EMAIL_BATCH_MODE'],
       batchInterval: process.env['EMAIL_BATCH_INTERVAL'],
+    },
+    whitelist: {
+      defaultTrustLevel: process.env['WHITELIST_DEFAULT_TRUST_LEVEL'],
+      trustLevelEnabled: process.env['WHITELIST_TRUST_LEVEL_ENABLED'],
+      trustLevelLogging: process.env['WHITELIST_TRUST_LEVEL_LOGGING'],
     },
   };
 

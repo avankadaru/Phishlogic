@@ -8,8 +8,9 @@ import type { AnalysisSignal } from '../../models/analysis-result.js';
 import type { NormalizedInput } from '../../models/input.js';
 import { isEmailInput, isUrlInput } from '../../models/input.js';
 import { getLogger } from '../../../infrastructure/logging/index.js';
-import type { Browser } from 'playwright';
+import type { Browser, Page } from 'playwright';
 import { chromium } from 'playwright';
+import { loginPageDetectionService } from '../../services/login-page-detection.service.js';
 
 const logger = getLogger();
 
@@ -42,7 +43,7 @@ export class FormAnalyzer extends BaseAnalyzer {
   }
 
   getWeight(): number {
-    return 1.8;
+    return this.config.analysis.analyzerWeights.form; // Configurable from env (default: 1.7)
   }
 
   getType(): 'static' | 'dynamic' {
@@ -71,7 +72,7 @@ export class FormAnalyzer extends BaseAnalyzer {
         if (formInfo.hasSensitiveForms) {
           const fieldTypes = formInfo.sensitiveFields.map((f) => f.type);
 
-          // Critical: Password + credit card
+          // Critical: Password + credit card/SSN (financial fraud)
           if (
             fieldTypes.includes('password') &&
             (fieldTypes.includes('credit_card') || fieldTypes.includes('ssn'))
@@ -91,39 +92,63 @@ export class FormAnalyzer extends BaseAnalyzer {
               })
             );
           }
-          // High: Password + email (typical login phishing)
-          else if (fieldTypes.includes('password') && fieldTypes.includes('email')) {
-            signals.push(
-              this.createSignal({
-                signalType: 'form_detected',
-                severity: 'high',
-                confidence: 0.85,
-                description: 'Page contains a login form requesting password and email',
-                evidence: {
-                  url,
-                  formCount: formInfo.formCount,
-                  sensitiveFields: formInfo.sensitiveFields,
-                },
-              })
-            );
-          }
-          // Medium: Any password field
+          // Detect if this is a legitimate login page using sophisticated detection
           else if (fieldTypes.includes('password')) {
-            signals.push(
-              this.createSignal({
-                signalType: 'form_detected',
-                severity: 'medium',
-                confidence: 0.75,
-                description: 'Page contains a form requesting password',
-                evidence: {
-                  url,
-                  formCount: formInfo.formCount,
-                  sensitiveFields: formInfo.sensitiveFields,
-                },
-              })
-            );
+            const loginDetection = await this.detectLoginPage(url, formInfo);
+
+            // Only generate signal if login page detected with sufficient confidence
+            if (loginDetection.isLoginPage && loginDetection.confidence >= 0.4) {
+              let severity: 'low' | 'medium' | 'high' = 'medium';
+              let baseConfidence = loginDetection.confidence;
+
+              // Low: OAuth providers detected (likely legitimate)
+              if (loginDetection.evidence.oauthProviders.length > 0) {
+                severity = 'low';
+                baseConfidence = loginDetection.confidence * 0.5; // Reduce confidence
+              }
+              // Medium: Standard login form
+              else if (fieldTypes.includes('email')) {
+                severity = 'medium';
+                baseConfidence = loginDetection.confidence * 0.85;
+              }
+
+              signals.push(
+                this.createSignal({
+                  signalType: 'form_detected',
+                  severity,
+                  confidence: Math.min(baseConfidence, 1.0),
+                  description: `Login page detected (confidence: ${(loginDetection.confidence * 100).toFixed(0)}%)`,
+                  evidence: {
+                    url,
+                    formCount: formInfo.formCount,
+                    sensitiveFields: formInfo.sensitiveFields,
+                    loginDetection: {
+                      confidence: loginDetection.confidence,
+                      keywords: loginDetection.evidence.keywords,
+                      oauthProviders: loginDetection.evidence.oauthProviders,
+                      hasMobileInput: loginDetection.evidence.hasMobileInput,
+                    },
+                  },
+                })
+              );
+            } else {
+              // No login detection - treat as generic password form
+              signals.push(
+                this.createSignal({
+                  signalType: 'form_detected',
+                  severity: 'medium',
+                  confidence: 0.75,
+                  description: 'Page contains a form requesting password',
+                  evidence: {
+                    url,
+                    formCount: formInfo.formCount,
+                    sensitiveFields: formInfo.sensitiveFields,
+                  },
+                })
+              );
+            }
           }
-          // Medium: Credit card
+          // Medium: Credit card (no password)
           else if (fieldTypes.includes('credit_card')) {
             signals.push(
               this.createSignal({
@@ -239,6 +264,66 @@ export class FormAnalyzer extends BaseAnalyzer {
         formCount,
         sensitiveFields,
       };
+    } finally {
+      await page.close();
+      await context.close();
+    }
+  }
+
+  /**
+   * Detect if page is a login page using sophisticated detection
+   */
+  private async detectLoginPage(
+    url: string,
+    formInfo: {
+      hasSensitiveForms: boolean;
+      formCount: number;
+      sensitiveFields: Array<{ type: string; name: string; label?: string }>;
+    }
+  ) {
+    const browser = await this.getBrowser();
+    const context = await browser.newContext({
+      userAgent:
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    });
+    const page = await context.newPage();
+
+    try {
+      await page.goto(url, {
+        waitUntil: 'domcontentloaded',
+        timeout: NAVIGATION_TIMEOUT,
+      });
+
+      // Extract page content for login detection
+      const bodyText = (await page.textContent('body')) || '';
+      const title = await page.title();
+      const buttons = await page.$$eval('button', (btns) =>
+        btns.map((b) => b.textContent || '')
+      );
+      const links = await page.$$eval('a', (anchors) =>
+        anchors.map((a) => a.textContent || '')
+      );
+      const headings = await page.$$eval('h1, h2, h3', (hdgs) =>
+        hdgs.map((h) => h.textContent || '')
+      );
+
+      // Determine field types from formInfo
+      const fieldTypes = formInfo.sensitiveFields.map((f) => f.type);
+      const formFields = {
+        hasPassword: fieldTypes.includes('password'),
+        hasEmail: fieldTypes.includes('email'),
+        hasMobile: fieldTypes.includes('account') || fieldTypes.includes('username'),
+      };
+
+      // Use login detection service
+      return loginPageDetectionService.detectLoginPage({
+        bodyText,
+        title,
+        buttons,
+        links,
+        headings,
+        formFields,
+      });
     } finally {
       await page.close();
       await context.close();

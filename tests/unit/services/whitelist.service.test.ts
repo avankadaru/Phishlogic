@@ -12,13 +12,13 @@ describe('WhitelistService', () => {
     service = new WhitelistService();
   });
 
-  afterEach(() => {
-    service.clear();
+  afterEach(async () => {
+    await service.clear();
   });
 
   describe('addEntry', () => {
-    it('should add an email whitelist entry', () => {
-      const entry = service.addEntry({
+    it('should add an email whitelist entry', async () => {
+      const entry = await service.addEntry({
         type: 'email',
         value: 'test@example.com',
         description: 'Test email',
@@ -31,8 +31,8 @@ describe('WhitelistService', () => {
       expect(entry.active).toBe(true);
     });
 
-    it('should add a domain whitelist entry', () => {
-      const entry = service.addEntry({
+    it('should add a domain whitelist entry', async () => {
+      const entry = await service.addEntry({
         type: 'domain',
         value: 'example.com',
         description: 'Test domain',
@@ -43,8 +43,8 @@ describe('WhitelistService', () => {
       expect(entry.value).toBe('example.com');
     });
 
-    it('should add a URL whitelist entry', () => {
-      const entry = service.addEntry({
+    it('should add a URL whitelist entry', async () => {
+      const entry = await service.addEntry({
         type: 'url',
         value: 'https://example.com/page',
         description: 'Test URL',
@@ -55,8 +55,8 @@ describe('WhitelistService', () => {
       expect(entry.value).toBe('https://example.com/page');
     });
 
-    it('should normalize email addresses to lowercase', () => {
-      const entry = service.addEntry({
+    it('should normalize email addresses to lowercase', async () => {
+      const entry = await service.addEntry({
         type: 'email',
         value: 'Test@Example.COM',
       });
@@ -64,8 +64,8 @@ describe('WhitelistService', () => {
       expect(entry.value).toBe('test@example.com');
     });
 
-    it('should normalize domains by removing www', () => {
-      const entry = service.addEntry({
+    it('should normalize domains by removing www', async () => {
+      const entry = await service.addEntry({
         type: 'domain',
         value: 'www.example.com',
       });
@@ -75,57 +75,57 @@ describe('WhitelistService', () => {
   });
 
   describe('removeEntry', () => {
-    it('should remove an entry by ID', () => {
-      const entry = service.addEntry({
+    it('should remove an entry by ID', async () => {
+      const entry = await service.addEntry({
         type: 'email',
         value: 'test@example.com',
       });
 
-      const removed = service.removeEntry(entry.id);
+      const removed = await service.removeEntry(entry.id);
       expect(removed).toBe(true);
 
-      const retrieved = service.getEntry(entry.id);
+      const retrieved = await service.getEntry(entry.id);
       expect(retrieved).toBeUndefined();
     });
 
-    it('should return false when removing non-existent entry', () => {
-      const removed = service.removeEntry('non-existent-id');
+    it('should return false when removing non-existent entry', async () => {
+      const removed = await service.removeEntry('00000000-0000-0000-0000-000000000000');
       expect(removed).toBe(false);
     });
   });
 
   describe('deactivateEntry and activateEntry', () => {
-    it('should deactivate an entry', () => {
-      const entry = service.addEntry({
+    it('should deactivate an entry', async () => {
+      const entry = await service.addEntry({
         type: 'email',
         value: 'test@example.com',
       });
 
-      const deactivated = service.deactivateEntry(entry.id);
+      const deactivated = await service.deactivateEntry(entry.id);
       expect(deactivated).toBe(true);
 
-      const retrieved = service.getEntry(entry.id);
+      const retrieved = await service.getEntry(entry.id);
       expect(retrieved?.active).toBe(false);
     });
 
-    it('should activate an entry', () => {
-      const entry = service.addEntry({
+    it('should activate an entry', async () => {
+      const entry = await service.addEntry({
         type: 'email',
         value: 'test@example.com',
       });
 
-      service.deactivateEntry(entry.id);
-      const activated = service.activateEntry(entry.id);
+      await service.deactivateEntry(entry.id);
+      const activated = await service.activateEntry(entry.id);
       expect(activated).toBe(true);
 
-      const retrieved = service.getEntry(entry.id);
+      const retrieved = await service.getEntry(entry.id);
       expect(retrieved?.active).toBe(true);
     });
   });
 
   describe('check', () => {
-    it('should match whitelisted email address', () => {
-      service.addEntry({
+    it('should match whitelisted email address', async () => {
+      await service.addEntry({
         type: 'email',
         value: 'safe@example.com',
       });
@@ -146,13 +146,13 @@ describe('WhitelistService', () => {
         },
       };
 
-      const result = service.check(input);
+      const result = await service.check(input);
       expect(result.isWhitelisted).toBe(true);
       expect(result.matchReason).toBe('exact email match');
     });
 
-    it('should match whitelisted domain from email', () => {
-      service.addEntry({
+    it('should match whitelisted domain from email', async () => {
+      await service.addEntry({
         type: 'domain',
         value: 'example.com',
       });
@@ -173,13 +173,13 @@ describe('WhitelistService', () => {
         },
       };
 
-      const result = service.check(input);
+      const result = await service.check(input);
       expect(result.isWhitelisted).toBe(true);
       expect(result.matchReason).toBe('exact domain match');
     });
 
-    it('should match whitelisted URL', () => {
-      service.addEntry({
+    it('should match whitelisted URL', async () => {
+      await service.addEntry({
         type: 'url',
         value: 'https://safe.com/page',
       });
@@ -193,13 +193,13 @@ describe('WhitelistService', () => {
         },
       };
 
-      const result = service.check(input);
+      const result = await service.check(input);
       expect(result.isWhitelisted).toBe(true);
       expect(result.matchReason).toBe('exact URL match');
     });
 
-    it('should match whitelisted URL with query params (prefix match)', () => {
-      service.addEntry({
+    it('should match whitelisted URL with query params (prefix match)', async () => {
+      await service.addEntry({
         type: 'url',
         value: 'https://safe.com/page',
       });
@@ -213,13 +213,13 @@ describe('WhitelistService', () => {
         },
       };
 
-      const result = service.check(input);
+      const result = await service.check(input);
       expect(result.isWhitelisted).toBe(true);
       expect(result.matchReason).toBe('URL prefix match');
     });
 
-    it('should match whitelisted domain from URL', () => {
-      service.addEntry({
+    it('should match whitelisted domain from URL', async () => {
+      await service.addEntry({
         type: 'domain',
         value: 'example.com',
       });
@@ -233,18 +233,18 @@ describe('WhitelistService', () => {
         },
       };
 
-      const result = service.check(input);
+      const result = await service.check(input);
       expect(result.isWhitelisted).toBe(true);
       expect(result.matchReason).toBe('exact domain match');
     });
 
-    it('should not match inactive entries', () => {
-      const entry = service.addEntry({
+    it('should not match inactive entries', async () => {
+      const entry = await service.addEntry({
         type: 'email',
         value: 'safe@example.com',
       });
 
-      service.deactivateEntry(entry.id);
+      await service.deactivateEntry(entry.id);
 
       const input: NormalizedInput = {
         type: 'email',
@@ -262,15 +262,15 @@ describe('WhitelistService', () => {
         },
       };
 
-      const result = service.check(input);
+      const result = await service.check(input);
       expect(result.isWhitelisted).toBe(false);
     });
 
-    it('should not match expired entries', () => {
+    it('should not match expired entries', async () => {
       const pastDate = new Date();
       pastDate.setDate(pastDate.getDate() - 1); // Yesterday
 
-      service.addEntry({
+      await service.addEntry({
         type: 'email',
         value: 'safe@example.com',
         expiresAt: pastDate,
@@ -292,11 +292,11 @@ describe('WhitelistService', () => {
         },
       };
 
-      const result = service.check(input);
+      const result = await service.check(input);
       expect(result.isWhitelisted).toBe(false);
     });
 
-    it('should return false for non-whitelisted input', () => {
+    it('should return false for non-whitelisted input', async () => {
       const input: NormalizedInput = {
         type: 'email',
         id: 'test-id',
@@ -313,23 +313,23 @@ describe('WhitelistService', () => {
         },
       };
 
-      const result = service.check(input);
+      const result = await service.check(input);
       expect(result.isWhitelisted).toBe(false);
       expect(result.matchedEntry).toBeUndefined();
     });
   });
 
   describe('getStats', () => {
-    it('should return correct statistics', () => {
-      service.addEntry({ type: 'email', value: 'test1@example.com' });
-      service.addEntry({ type: 'email', value: 'test2@example.com' });
-      service.addEntry({ type: 'domain', value: 'example.com' });
-      service.addEntry({ type: 'url', value: 'https://example.com' });
+    it('should return correct statistics', async () => {
+      await service.addEntry({ type: 'email', value: 'test1@example.com' });
+      await service.addEntry({ type: 'email', value: 'test2@example.com' });
+      await service.addEntry({ type: 'domain', value: 'example.com' });
+      await service.addEntry({ type: 'url', value: 'https://example.com' });
 
-      const entry = service.addEntry({ type: 'email', value: 'test3@example.com' });
-      service.deactivateEntry(entry.id);
+      const entry = await service.addEntry({ type: 'email', value: 'test3@example.com' });
+      await service.deactivateEntry(entry.id);
 
-      const stats = service.getStats();
+      const stats = await service.getStats();
 
       expect(stats.total).toBe(5);
       expect(stats.active).toBe(4); // One deactivated
@@ -340,12 +340,12 @@ describe('WhitelistService', () => {
   });
 
   describe('getActiveEntries', () => {
-    it('should return only active entries', () => {
-      service.addEntry({ type: 'email', value: 'active@example.com' });
-      const entry = service.addEntry({ type: 'email', value: 'inactive@example.com' });
-      service.deactivateEntry(entry.id);
+    it('should return only active entries', async () => {
+      await service.addEntry({ type: 'email', value: 'active@example.com' });
+      const entry = await service.addEntry({ type: 'email', value: 'inactive@example.com' });
+      await service.deactivateEntry(entry.id);
 
-      const activeEntries = service.getActiveEntries();
+      const activeEntries = await service.getActiveEntries();
 
       expect(activeEntries).toHaveLength(1);
       expect(activeEntries[0]?.value).toBe('active@example.com');
@@ -353,13 +353,13 @@ describe('WhitelistService', () => {
   });
 
   describe('getEntriesByType', () => {
-    it('should return entries filtered by type', () => {
-      service.addEntry({ type: 'email', value: 'test1@example.com' });
-      service.addEntry({ type: 'email', value: 'test2@example.com' });
-      service.addEntry({ type: 'domain', value: 'example.com' });
+    it('should return entries filtered by type', async () => {
+      await service.addEntry({ type: 'email', value: 'test1@example.com' });
+      await service.addEntry({ type: 'email', value: 'test2@example.com' });
+      await service.addEntry({ type: 'domain', value: 'example.com' });
 
-      const emailEntries = service.getEntriesByType('email');
-      const domainEntries = service.getEntriesByType('domain');
+      const emailEntries = await service.getEntriesByType('email');
+      const domainEntries = await service.getEntriesByType('domain');
 
       expect(emailEntries).toHaveLength(2);
       expect(domainEntries).toHaveLength(1);

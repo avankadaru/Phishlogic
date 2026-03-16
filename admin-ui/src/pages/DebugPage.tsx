@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import api from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -6,8 +7,10 @@ import { Input } from '@/components/ui/Input';
 import { formatRelativeTime } from '@/lib/utils';
 import type { Analysis } from '@/types';
 import { Bug, CheckCircle, AlertTriangle, XCircle, Search } from 'lucide-react';
+import { ExecutionStepsTimeline } from '@/components/ExecutionStepsTimeline';
 
 export default function DebugPage() {
+  const [searchParams] = useSearchParams();
   const [analyses, setAnalyses] = useState<Analysis[]>([]);
   const [loading, setLoading] = useState(true);
   const [analysisIdSearch, setAnalysisIdSearch] = useState('');
@@ -18,8 +21,24 @@ export default function DebugPage() {
   const [totalCount, setTotalCount] = useState(0);
   const pageSize = 20;
 
+  // Check if there's an ID in the URL query parameter
   useEffect(() => {
-    loadAnalyses();
+    const idFromUrl = searchParams.get('id');
+    if (idFromUrl) {
+      setAnalysisIdSearch(idFromUrl);
+      // Trigger search after a small delay to ensure state is set
+      setTimeout(() => {
+        handleSearchById(idFromUrl);
+      }, 100);
+    } else {
+      loadAnalyses();
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!searchParams.get('id')) {
+      loadAnalyses();
+    }
   }, [currentPage]);
 
   const loadAnalyses = async () => {
@@ -33,8 +52,8 @@ export default function DebugPage() {
       params.append('offset', ((currentPage - 1) * pageSize).toString());
 
       const response = await api.get(`/admin/debug/analyses?${params}`);
-      setAnalyses(response.data.data || response.data.data?.analyses || []);
-      setTotalCount(response.data.total || response.data.data?.analyses?.length || 0);
+      setAnalyses(response.data.data?.analyses || []);
+      setTotalCount(response.data.data?.pagination?.total || 0);
     } catch (error) {
       console.error('Failed to load analyses:', error);
       setAnalyses([]);
@@ -44,13 +63,14 @@ export default function DebugPage() {
     }
   };
 
-  const handleSearchById = async () => {
-    if (!analysisIdSearch.trim()) return;
+  const handleSearchById = async (id?: string) => {
+    const searchId = id || analysisIdSearch.trim();
+    if (!searchId) return;
 
     setLoading(true);
     try {
-      const response = await api.get(`/admin/debug/analyses/${analysisIdSearch.trim()}`);
-      setAnalyses([response.data]);
+      const response = await api.get(`/admin/debug/analyses/${searchId}`);
+      setAnalyses([response.data.data]);
       setTotalCount(1);
       setCurrentPage(1);
     } catch (error) {
@@ -148,7 +168,7 @@ export default function DebugPage() {
               onKeyPress={(e) => e.key === 'Enter' && handleSearchById()}
               className="flex-1"
             />
-            <Button onClick={handleSearchById} disabled={loading || !analysisIdSearch.trim()}>
+            <Button onClick={() => handleSearchById()} disabled={loading || !analysisIdSearch.trim()}>
               <Search className="w-4 h-4 mr-2" />
               Search by ID
             </Button>
@@ -272,7 +292,159 @@ export default function DebugPage() {
                     <div className="mt-2 p-2 rounded-md bg-green-50 dark:bg-green-900/20">
                       <p className="text-xs text-green-800 dark:text-green-400">
                         ✓ Whitelisted: {analysis.whitelistReason}
+                        {analysis.trustLevel && (
+                          <span className={`ml-2 px-2 py-0.5 rounded-full text-xs font-medium ${
+                            analysis.trustLevel === 'high' ? 'bg-green-200 text-green-900' :
+                            analysis.trustLevel === 'medium' ? 'bg-yellow-200 text-yellow-900' :
+                            'bg-orange-200 text-orange-900'
+                          }`}>
+                            {analysis.trustLevel.toUpperCase()} TRUST
+                          </span>
+                        )}
                       </p>
+                    </div>
+                  )}
+                  {analysis.analyzersRun && analysis.analyzersRun.length >= 0 && (
+                    <div className="mt-2 p-2 rounded-md bg-blue-50 dark:bg-blue-900/20">
+                      <div className="flex justify-between items-center mb-1">
+                        <p className="text-xs font-medium text-blue-800 dark:text-blue-400">
+                          Analyzers Executed
+                        </p>
+                        <span className="text-xs font-bold text-blue-900 dark:text-blue-300">
+                          {analysis.analyzersRun.length} / 9
+                        </span>
+                      </div>
+                      {analysis.analyzersRun.length === 0 ? (
+                        <p className="text-xs text-blue-700 dark:text-blue-400 italic">
+                          Full bypass (trusted sender, no risk indicators)
+                        </p>
+                      ) : (
+                        <div className="flex flex-wrap gap-1 mt-1">
+                          {analysis.analyzersRun.map((analyzer, idx) => (
+                            <span
+                              key={idx}
+                              className="px-2 py-0.5 text-xs rounded bg-blue-100 dark:bg-blue-800/50 text-blue-800 dark:text-blue-200"
+                            >
+                              {analyzer}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {analysis.contentRisk && (
+                    <div className="mt-2 p-2 rounded-md bg-purple-50 dark:bg-purple-900/20">
+                      <p className="text-xs font-medium text-purple-800 dark:text-purple-400 mb-1">
+                        Content Risk Assessment
+                      </p>
+                      <div className="flex flex-wrap gap-2 text-xs">
+                        <span className={`px-2 py-0.5 rounded ${
+                          analysis.contentRisk.hasLinks
+                            ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/50 dark:text-yellow-300'
+                            : 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400'
+                        }`}>
+                          {analysis.contentRisk.hasLinks ? '⚠️ Links' : '✓ No Links'}
+                        </span>
+                        <span className={`px-2 py-0.5 rounded ${
+                          analysis.contentRisk.hasAttachments
+                            ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/50 dark:text-yellow-300'
+                            : 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400'
+                        }`}>
+                          {analysis.contentRisk.hasAttachments ? '⚠️ Attachments' : '✓ No Attachments'}
+                        </span>
+                        <span className={`px-2 py-0.5 rounded ${
+                          analysis.contentRisk.hasUrgencyLanguage
+                            ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/50 dark:text-yellow-300'
+                            : 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400'
+                        }`}>
+                          {analysis.contentRisk.hasUrgencyLanguage ? '⚠️ Urgency' : '✓ No Urgency'}
+                        </span>
+                        <span className="px-2 py-0.5 rounded bg-purple-100 text-purple-800 dark:bg-purple-800/50 dark:text-purple-200 font-medium">
+                          Risk: {analysis.contentRisk.overallRiskScore}/10
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                  {analysis.costSummary && analysis.costSummary.operations && analysis.costSummary.operations.length > 0 && (
+                    <div className="mt-2 p-2 rounded-md bg-orange-50 dark:bg-orange-900/20">
+                      <div className="flex justify-between items-center mb-2">
+                        <p className="text-xs font-medium text-orange-800 dark:text-orange-400">
+                          Cost Breakdown
+                        </p>
+                        <span className="text-xs font-bold text-orange-900 dark:text-orange-300">
+                          Total: ${analysis.costSummary.totalCostUsd.toFixed(4)}
+                        </span>
+                      </div>
+                      <div className="space-y-1.5">
+                        {analysis.costSummary.operations.map((op, idx) => (
+                          <div key={idx} className="flex items-start justify-between text-xs bg-white dark:bg-gray-800 p-2 rounded">
+                            <div className="flex-1">
+                              <div className="flex items-center gap-2">
+                                <span className="font-medium text-orange-900 dark:text-orange-200">
+                                  {op.operationType.replace(/_/g, ' ').toUpperCase()}
+                                </span>
+                                <span className="px-1.5 py-0.5 bg-orange-100 dark:bg-orange-800/50 text-orange-800 dark:text-orange-200 rounded text-[10px] font-medium">
+                                  {op.count}x
+                                </span>
+                              </div>
+                              <p className="text-[10px] text-muted-foreground mt-0.5">
+                                {op.description}
+                              </p>
+                              {op.metadata && (
+                                <div className="flex flex-wrap gap-1.5 mt-1">
+                                  {op.metadata.provider && (
+                                    <span className="text-[10px] px-1.5 py-0.5 bg-gray-100 dark:bg-gray-700 rounded">
+                                      {op.metadata.provider}
+                                    </span>
+                                  )}
+                                  {op.metadata.model && (
+                                    <span className="text-[10px] px-1.5 py-0.5 bg-gray-100 dark:bg-gray-700 rounded">
+                                      {op.metadata.model}
+                                    </span>
+                                  )}
+                                  {op.metadata.tokensUsed && (
+                                    <span className="text-[10px] px-1.5 py-0.5 bg-gray-100 dark:bg-gray-700 rounded">
+                                      {op.metadata.tokensUsed} tokens
+                                    </span>
+                                  )}
+                                  {op.metadata.browser && (
+                                    <span className="text-[10px] px-1.5 py-0.5 bg-gray-100 dark:bg-gray-700 rounded">
+                                      {op.metadata.browser}
+                                    </span>
+                                  )}
+                                  {op.metadata.urlsChecked && (
+                                    <span className="text-[10px] px-1.5 py-0.5 bg-gray-100 dark:bg-gray-700 rounded">
+                                      {op.metadata.urlsChecked} URLs
+                                    </span>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                            {op.costUsd && (
+                              <span className="text-[11px] font-medium text-orange-700 dark:text-orange-300 ml-2">
+                                ${op.costUsd.toFixed(4)}
+                              </span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {analysis.skippedTasks && analysis.skippedTasks.length > 0 && (
+                    <div className="mt-2 p-2 rounded-md bg-gray-50 dark:bg-gray-900/50">
+                      <p className="text-xs font-medium text-gray-800 dark:text-gray-400 mb-1">
+                        Skipped Tasks (no matching content):
+                      </p>
+                      <div className="flex flex-wrap gap-1">
+                        {analysis.skippedTasks.map((task, idx) => (
+                          <span
+                            key={idx}
+                            className="px-2 py-0.5 text-xs rounded bg-gray-200 dark:bg-gray-800 text-gray-700 dark:text-gray-300"
+                          >
+                            {task}
+                          </span>
+                        ))}
+                      </div>
                     </div>
                   )}
                   {analysis.riskFactors && analysis.riskFactors.length > 0 && (
@@ -281,12 +453,36 @@ export default function DebugPage() {
                         Risk Factors:
                       </p>
                       <ul className="text-xs space-y-1">
-                        {analysis.riskFactors.map((factor, idx) => (
-                          <li key={idx} className="text-muted-foreground">
-                            • {factor}
-                          </li>
-                        ))}
+                        {analysis.riskFactors.map((factor, idx) => {
+                          const isObject = typeof factor === 'object' && factor !== null;
+                          const message = isObject ? (factor as any).message : factor;
+                          const severity = isObject ? (factor as any).severity : null;
+                          const severityColor =
+                            severity === 'critical' ? 'text-red-600 dark:text-red-400' :
+                            severity === 'high' ? 'text-orange-600 dark:text-orange-400' :
+                            severity === 'medium' ? 'text-yellow-600 dark:text-yellow-400' :
+                            'text-muted-foreground';
+
+                          return (
+                            <li key={idx} className={severityColor}>
+                              • {message}
+                              {severity && (
+                                <span className="ml-2 text-xs px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 uppercase">
+                                  {severity}
+                                </span>
+                              )}
+                            </li>
+                          );
+                        })}
                       </ul>
+                    </div>
+                  )}
+                  {analysis.executionSteps && analysis.executionSteps.length > 0 && (
+                    <div className="mt-4">
+                      <p className="text-sm font-medium text-muted-foreground mb-3">
+                        Execution Timeline:
+                      </p>
+                      <ExecutionStepsTimeline steps={analysis.executionSteps} />
                     </div>
                   )}
                 </div>

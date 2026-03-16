@@ -4,6 +4,8 @@
 
 import type { AnalysisSignal } from '../../models/analysis-result.js';
 import type { NormalizedInput } from '../../models/input.js';
+import type { AppConfig } from '../../../config/app.config.js';
+import { getConfig } from '../../../config/index.js';
 
 /**
  * Analyzer interface that all analyzers must implement
@@ -47,6 +49,16 @@ export interface IAnalyzer {
  * Abstract base analyzer class providing common functionality
  */
 export abstract class BaseAnalyzer implements IAnalyzer {
+  /**
+   * Application configuration (loaded from environment)
+   * Available to all analyzers for accessing weights and thresholds
+   */
+  protected config: AppConfig;
+
+  constructor() {
+    this.config = getConfig();
+  }
+
   /**
    * Performs analysis on the input
    * Must be implemented by subclasses

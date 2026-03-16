@@ -1,0 +1,333 @@
+/**
+ * Content Risk Analyzer
+ * Performs fast risk assessment without running full analyzers
+ * Used to determine conditional bypass strategy for trusted senders
+ */
+
+import type { NormalizedInput } from '../../models/input.js';
+import { isEmailInput } from '../../models/input.js';
+
+/**
+ * Content risk profile interface
+ */
+export interface ContentRiskProfile {
+  hasLinks: boolean;
+  linkCount: number;
+  links: string[];
+  hasMaliciousLinks: boolean; // Quick heuristic check
+
+  hasAttachments: boolean;
+  attachmentCount: number;
+  attachments: string[];
+  hasSuspiciousAttachments: boolean; // Check extensions
+
+  hasUrgencyLanguage: boolean;
+  urgencyScore: number; // 0-10 scale
+  urgencyIndicators: string[]; // "act now", "24 hours", etc.
+
+  hasCredentialForms: boolean; // Requires browser check (placeholder)
+
+  overallRiskScore: number; // 0-10 weighted score
+}
+
+/**
+ * Urgency keywords and phrases
+ */
+const URGENCY_PATTERNS = [
+  // Time pressure
+  { pattern: /\b(urgent|immediately|asap|right away|at once)\b/i, weight: 2.0 },
+  { pattern: /\b(act now|respond now|click now|verify now)\b/i, weight: 2.5 },
+  { pattern: /\b(24 hours?|48 hours?|within \d+ (hours?|days?))\b/i, weight: 2.0 },
+  { pattern: /\b(expires? (today|tonight|soon|shortly))\b/i, weight: 1.8 },
+  { pattern: /\b(time[- ]sensitive|time is running out)\b/i, weight: 2.2 },
+  { pattern: /\b(last chance|final (notice|warning|reminder))\b/i, weight: 2.3 },
+
+  // Threats
+  { pattern: /\b(suspend(ed)?|lock(ed)?|block(ed)?|terminat(e|ed)|clos(e|ed))\b.*\baccount\b/i, weight: 3.0 },
+  { pattern: /\b(will be (suspended|locked|closed|terminated|deleted))\b/i, weight: 2.8 },
+  { pattern: /\b(unauthorized (access|activity|transaction))\b/i, weight: 2.5 },
+  { pattern: /\b(security (alert|breach|violation|issue))\b/i, weight: 2.3 },
+  { pattern: /\b(unusual activity|suspicious activity)\b/i, weight: 2.2 },
+
+  // Action required
+  { pattern: /\b(action required|immediate action|required action)\b/i, weight: 2.5 },
+  { pattern: /\b(verify (your )?(account|identity|information))\b/i, weight: 2.3 },
+  { pattern: /\b(confirm (your )?(account|identity|information|payment))\b/i, weight: 2.2 },
+  { pattern: /\b(update (your )?(account|payment|information))\b/i, weight: 1.8 },
+  { pattern: /\b(click (here|below|link) to)\b/i, weight: 1.5 },
+
+  // Authority
+  { pattern: /\b(CEO|CFO|executive|president|director)\b/i, weight: 1.8 },
+  { pattern: /\b(legal (action|notice|department))\b/i, weight: 2.5 },
+  { pattern: /\b(IRS|government|federal|tax authority)\b/i, weight: 2.3 },
+
+  // Consequences
+  { pattern: /\b(lose access|permanently (deleted|closed|suspended))\b/i, weight: 2.5 },
+  { pattern: /\b(late fee|penalty|fine)\b/i, weight: 1.8 },
+  { pattern: /\b(failure to (respond|act|comply))\b/i, weight: 2.2 },
+];
+
+/**
+ * Suspicious attachment extensions
+ */
+const SUSPICIOUS_EXTENSIONS = [
+  '.exe', '.scr', '.bat', '.cmd', '.com', '.pif', '.vbs', '.js',
+  '.jar', '.zip', '.rar', '.7z', '.iso', '.dmg',
+  '.docm', '.xlsm', '.pptm', // Macro-enabled Office files
+  '.pdf.exe', '.doc.exe', '.jpg.exe', // Double extensions
+];
+
+/**
+ * URL detection regex (simplified)
+ */
+const URL_REGEX = /https?:\/\/[^\s<>"{}|\\^`\[\]]+/gi;
+
+/**
+ * Content Risk Analyzer
+ */
+export class ContentRiskAnalyzer {
+  /**
+   * Quick risk assessment without running full analyzers
+   * Used to determine conditional bypass strategy
+   */
+  async analyzeRisk(input: NormalizedInput): Promise<ContentRiskProfile> {
+    const profile: ContentRiskProfile = {
+      hasLinks: false,
+      linkCount: 0,
+      links: [],
+      hasMaliciousLinks: false,
+
+      hasAttachments: false,
+      attachmentCount: 0,
+      attachments: [],
+      hasSuspiciousAttachments: false,
+
+      hasUrgencyLanguage: false,
+      urgencyScore: 0,
+      urgencyIndicators: [],
+
+      hasCredentialForms: false, // Placeholder (requires browser analysis)
+
+      overallRiskScore: 0,
+    };
+
+    // Analyze links
+    const linkAnalysis = this.analyzeLinks(input);
+    profile.hasLinks = linkAnalysis.hasLinks;
+    profile.linkCount = linkAnalysis.linkCount;
+    profile.links = linkAnalysis.links;
+    profile.hasMaliciousLinks = linkAnalysis.hasMaliciousLinks;
+
+    // Analyze attachments (email only)
+    if (isEmailInput(input)) {
+      const attachmentAnalysis = this.analyzeAttachments(input);
+      profile.hasAttachments = attachmentAnalysis.hasAttachments;
+      profile.attachmentCount = attachmentAnalysis.attachmentCount;
+      profile.attachments = attachmentAnalysis.attachments;
+      profile.hasSuspiciousAttachments = attachmentAnalysis.hasSuspiciousAttachments;
+
+      // Analyze urgency language (email only)
+      const urgencyAnalysis = this.analyzeUrgency(input);
+      profile.hasUrgencyLanguage = urgencyAnalysis.hasUrgency;
+      profile.urgencyScore = urgencyAnalysis.score;
+      profile.urgencyIndicators = urgencyAnalysis.indicators;
+    }
+
+    // Calculate overall risk score (0-10)
+    profile.overallRiskScore = this.calculateOverallRisk(profile);
+
+    return profile;
+  }
+
+  /**
+   * Analyze links in content
+   */
+  private analyzeLinks(input: NormalizedInput): {
+    hasLinks: boolean;
+    linkCount: number;
+    links: string[];
+    hasMaliciousLinks: boolean;
+  } {
+    let links: string[] = [];
+
+    // Extract links from email
+    if (isEmailInput(input)) {
+      if (input.data.parsed.urls && input.data.parsed.urls.length > 0) {
+        links = input.data.parsed.urls;
+      } else {
+        // Fallback: extract from body/html
+        const text = input.data.parsed.text || input.data.parsed.html || '';
+        const matches = text.match(URL_REGEX);
+        links = matches || [];
+      }
+    } else {
+      // For URL input, the URL itself is the link
+      links = [input.data.url];
+    }
+
+    // Quick heuristic check for malicious links
+    const hasMaliciousLinks = links.some((url) => this.isLinkSuspicious(url));
+
+    return {
+      hasLinks: links.length > 0,
+      linkCount: links.length,
+      links,
+      hasMaliciousLinks,
+    };
+  }
+
+  /**
+   * Quick heuristic check for suspicious links
+   */
+  private isLinkSuspicious(url: string): boolean {
+    try {
+      const urlObj = new URL(url);
+      const hostname = urlObj.hostname.toLowerCase();
+      const path = urlObj.pathname.toLowerCase();
+
+      // Check for typosquatting indicators
+      const typosquattingPatterns = [
+        /paypa1/i,  // paypal with 1
+        /g00gle/i,  // google with 0
+        /microso[f|t]t/i, // microsoft variations
+        /\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/, // IP address
+        /[a-z0-9]{20,}/i, // Very long random subdomain
+        /-{3,}/,  // Multiple consecutive hyphens
+      ];
+
+      if (typosquattingPatterns.some((pattern) => pattern.test(hostname))) {
+        return true;
+      }
+
+      // Check for suspicious TLDs
+      const suspiciousTLDs = ['.tk', '.ml', '.ga', '.cf', '.gq', '.xyz', '.top'];
+      if (suspiciousTLDs.some((tld) => hostname.endsWith(tld))) {
+        return true;
+      }
+
+      // Check for URL shorteners (could hide destination)
+      const shorteners = ['bit.ly', 'tinyurl.com', 'goo.gl', 't.co', 'ow.ly'];
+      if (shorteners.some((shortener) => hostname.includes(shortener))) {
+        return true;
+      }
+
+      // Check for suspicious keywords in path
+      const suspiciousKeywords = ['login', 'verify', 'secure', 'account', 'update', 'confirm'];
+      if (suspiciousKeywords.some((keyword) => path.includes(keyword))) {
+        return true;
+      }
+
+      return false;
+    } catch (error) {
+      // Invalid URL, consider suspicious
+      return true;
+    }
+  }
+
+  /**
+   * Analyze attachments (email only)
+   */
+  private analyzeAttachments(input: NormalizedInput): {
+    hasAttachments: boolean;
+    attachmentCount: number;
+    attachments: string[];
+    hasSuspiciousAttachments: boolean;
+  } {
+    if (!isEmailInput(input)) {
+      return {
+        hasAttachments: false,
+        attachmentCount: 0,
+        attachments: [],
+        hasSuspiciousAttachments: false,
+      };
+    }
+
+    const attachments = input.data.parsed.attachments || [];
+    const attachmentNames = attachments.map((att) => att.filename);
+
+    // Check for suspicious extensions
+    const hasSuspiciousAttachments = attachmentNames.some((name) =>
+      SUSPICIOUS_EXTENSIONS.some((ext) => name.toLowerCase().endsWith(ext))
+    );
+
+    return {
+      hasAttachments: attachments.length > 0,
+      attachmentCount: attachments.length,
+      attachments: attachmentNames,
+      hasSuspiciousAttachments,
+    };
+  }
+
+  /**
+   * Analyze urgency language (email only)
+   */
+  private analyzeUrgency(input: NormalizedInput): {
+    hasUrgency: boolean;
+    score: number;
+    indicators: string[];
+  } {
+    if (!isEmailInput(input)) {
+      return { hasUrgency: false, score: 0, indicators: [] };
+    }
+
+    const text = (input.data.parsed.text || input.data.parsed.html || '').toLowerCase();
+    const subject = (input.data.parsed.subject || '').toLowerCase();
+    const combined = `${subject} ${text}`;
+
+    let totalScore = 0;
+    const indicators: string[] = [];
+
+    for (const { pattern, weight } of URGENCY_PATTERNS) {
+      const matches = combined.match(pattern);
+      if (matches) {
+        totalScore += weight;
+        indicators.push(matches[0]);
+      }
+    }
+
+    // Normalize score to 0-10 range
+    const normalizedScore = Math.min(totalScore, 10);
+
+    return {
+      hasUrgency: normalizedScore > 2.0,
+      score: normalizedScore,
+      indicators,
+    };
+  }
+
+  /**
+   * Calculate overall risk score (0-10)
+   */
+  private calculateOverallRisk(profile: ContentRiskProfile): number {
+    let score = 0;
+
+    // Links contribute 3 points max
+    if (profile.hasLinks) {
+      score += 1;
+      if (profile.linkCount > 3) {
+        score += 1;
+      }
+      if (profile.hasMaliciousLinks) {
+        score += 1;
+      }
+    }
+
+    // Attachments contribute 3 points max
+    if (profile.hasAttachments) {
+      score += 1;
+      if (profile.attachmentCount > 2) {
+        score += 1;
+      }
+      if (profile.hasSuspiciousAttachments) {
+        score += 1;
+      }
+    }
+
+    // Urgency language contributes 4 points max
+    if (profile.hasUrgencyLanguage) {
+      score += Math.min(profile.urgencyScore / 2.5, 4);
+    }
+
+    return Math.min(score, 10);
+  }
+}

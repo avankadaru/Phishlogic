@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react';
 import api from '@/lib/api';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/Card';
-import type { IntegrationTask, AIModelConfig } from '@/types';
+import type { IntegrationTask, AIModelConfig, TaskAnalyzerMapping, ApiCredential } from '@/types';
+import AnalyzerConfigSection from '@/components/AnalyzerConfigSection';
 import {
   Settings,
   Check,
@@ -20,10 +21,13 @@ import {
 export default function TasksPage() {
   const [integrationTasks, setIntegrationTasks] = useState<IntegrationTask[]>([]);
   const [aiModels, setAiModels] = useState<AIModelConfig[]>([]);
+  const [credentials, setCredentials] = useState<ApiCredential[]>([]);
+  const [taskAnalyzers, setTaskAnalyzers] = useState<Record<string, TaskAnalyzerMapping[]>>({});
   const [loading, setLoading] = useState(true);
   const [updating, setUpdating] = useState<string | null>(null);
   const [showModelConfig, setShowModelConfig] = useState(false);
   const [showDetails, setShowDetails] = useState<Record<string, boolean>>({});
+  const [showAnalyzers, setShowAnalyzers] = useState<Record<string, boolean>>({});
   const [addingNewModel, setAddingNewModel] = useState(false);
   const [editingModel, setEditingModel] = useState<AIModelConfig | null>(null);
   const [modelForm, setModelForm] = useState({
@@ -39,6 +43,7 @@ export default function TasksPage() {
   useEffect(() => {
     loadIntegrationTasks();
     loadAIModels();
+    loadCredentials();
   }, []);
 
   const loadIntegrationTasks = async () => {
@@ -58,6 +63,42 @@ export default function TasksPage() {
       setAiModels(response.data.data || []);
     } catch (error) {
       console.error('Failed to load AI models:', error);
+    }
+  };
+
+  const loadCredentials = async () => {
+    try {
+      const response = await api.get('/admin/credentials');
+      setCredentials(response.data.credentials || []);
+    } catch (error) {
+      console.error('Failed to load credentials:', error);
+    }
+  };
+
+  const loadTaskAnalyzers = async (integrationName: string) => {
+    try {
+      const response = await api.get(`/admin/integration-tasks/${integrationName}/analyzers`);
+      const analyzers = response.data.data?.analyzers || [];
+
+      // Transform to TaskAnalyzerMapping format with task information from API
+      const mappings: TaskAnalyzerMapping[] = analyzers.map((a: any) => ({
+        id: a.id || `${integrationName}-${a.analyzerName}`,
+        taskName: a.taskName || 'unknown',
+        analyzerName: a.analyzerName,
+        executionOrder: a.executionOrder || 0,
+        isLongRunning: a.isLongRunning || false,
+        estimatedDurationMs: a.estimatedDurationMs,
+        taskDisplayName: a.taskDisplayName,
+        taskDescription: a.taskDescription,
+        analyzerDisplayName: a.displayName,
+        analyzerDescription: a.description,
+        analyzerType: a.analyzerType,
+      }));
+
+      setTaskAnalyzers(prev => ({ ...prev, [integrationName]: mappings }));
+    } catch (error) {
+      console.error(`Failed to load analyzers for ${integrationName}:`, error);
+      setTaskAnalyzers(prev => ({ ...prev, [integrationName]: [] }));
     }
   };
 
@@ -172,6 +213,42 @@ export default function TasksPage() {
 
   const toggleDetails = (taskId: string) => {
     setShowDetails(prev => ({ ...prev, [taskId]: !prev[taskId] }));
+  };
+
+  const toggleAnalyzers = async (integrationName: string) => {
+    const isCurrentlyShown = showAnalyzers[integrationName];
+
+    // If we're opening the section and haven't loaded analyzers yet, load them
+    if (!isCurrentlyShown && !taskAnalyzers[integrationName]) {
+      await loadTaskAnalyzers(integrationName);
+    }
+
+    setShowAnalyzers(prev => ({ ...prev, [integrationName]: !prev[integrationName] }));
+  };
+
+  const handleSaveAnalyzerConfigs = async (integrationName: string, configs: any[]) => {
+    try {
+      // Update each analyzer's configuration
+      for (const config of configs) {
+        if (config.enabled) {
+          // Analyzer is enabled, update options
+          await api.put(
+            `/admin/integration-tasks/${integrationName}/analyzers/${config.analyzerName}`,
+            {
+              analyzerOptions: config.options,
+            }
+          );
+        }
+      }
+
+      alert('Analyzer configuration saved successfully!');
+
+      // Reload analyzers to reflect changes
+      await loadTaskAnalyzers(integrationName);
+    } catch (error: any) {
+      console.error('Failed to save analyzer configs:', error);
+      alert(error.response?.data?.error || 'Failed to save analyzer configuration');
+    }
   };
 
   const renderModeDetails = (task: IntegrationTask) => {
@@ -509,6 +586,61 @@ export default function TasksPage() {
         )}
       </Card>
 
+      {/* API Key Settings Section */}
+      <Card className="border-2 border-amber-200 dark:border-amber-800">
+        <CardHeader>
+          <div className="flex items-center space-x-3">
+            <Settings className="w-5 h-5 text-amber-600" />
+            <div>
+              <CardTitle>API Key Settings</CardTitle>
+              <CardDescription>
+                Configure API keys for external threat intelligence services (used by analyzers)
+              </CardDescription>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {/* PhishTank API Key */}
+          <div className="space-y-2">
+            <label className="text-sm font-medium">PhishTank API Key</label>
+            <select
+              className="w-full rounded border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm bg-white dark:bg-gray-800"
+              disabled
+            >
+              <option>No API Key (1 req/5sec rate limit)</option>
+            </select>
+            <p className="text-xs text-muted-foreground">
+              Optional - Higher rate limits with API key. Used by Link Reputation Analyzer.
+            </p>
+            <p className="text-xs text-muted-foreground italic">
+              Configure credentials in Credentials page, then they'll appear here.
+            </p>
+          </div>
+
+          {/* VirusTotal API Key */}
+          <div className="space-y-2 opacity-50">
+            <label className="text-sm font-medium">VirusTotal API Key</label>
+            <select disabled className="w-full rounded border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm bg-white dark:bg-gray-800">
+              <option>Coming soon</option>
+            </select>
+            <p className="text-xs text-muted-foreground">
+              Coming soon - Multi-engine malware scanning
+            </p>
+          </div>
+
+          {/* Google Safe Browsing API Key */}
+          <div className="space-y-2 opacity-50">
+            <label className="text-sm font-medium">Google Safe Browsing API Key</label>
+            <select disabled className="w-full rounded border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm bg-white dark:bg-gray-800">
+              <option>Coming soon</option>
+            </select>
+            <p className="text-xs text-muted-foreground">
+              Coming soon - Google's phishing and malware database
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+
       {/* Integration Tasks (Gmail, Chrome) */}
       <div className="space-y-4">
         {integrationTasks.length === 0 ? (
@@ -593,8 +725,60 @@ export default function TasksPage() {
                   {/* Mode Details */}
                   {renderModeDetails(task)}
 
+                  {/* Analyzer Configuration Section */}
+                  <div className="pt-4 border-t">
+                    {task.executionMode === 'ai' ? (
+                      <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded p-3">
+                        <p className="text-sm text-blue-800 dark:text-blue-100">
+                          <strong>AI Mode:</strong> Individual analyzer configuration is disabled.
+                          The AI model handles all analysis decisions.
+                        </p>
+                      </div>
+                    ) : (
+                      <>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => toggleAnalyzers(task.integrationName)}
+                          className="w-full"
+                        >
+                          {showAnalyzers[task.integrationName] ? (
+                            <>
+                              <ChevronUp className="w-4 h-4 mr-2" />
+                              Hide Analyzer Configuration
+                            </>
+                          ) : (
+                            <>
+                              <Settings className="w-4 h-4 mr-2" />
+                              Configure Analyzers
+                            </>
+                          )}
+                        </Button>
+
+                        {showAnalyzers[task.integrationName] && (
+                          <div className="mt-4">
+                            {taskAnalyzers[task.integrationName] ? (
+                              <AnalyzerConfigSection
+                                integrationName={task.integrationName}
+                                analyzers={taskAnalyzers[task.integrationName]}
+                                credentials={credentials}
+                                onSave={(configs) => handleSaveAnalyzerConfigs(task.integrationName, configs)}
+                                executionMode={task.executionMode}
+                              />
+                            ) : (
+                              <div className="flex items-center justify-center py-8">
+                                <div className="inline-block h-6 w-6 animate-spin rounded-full border-4 border-solid border-current border-r-transparent"></div>
+                                <p className="ml-3 text-sm text-muted-foreground">Loading analyzers...</p>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+
                   {/* Toggle Enabled */}
-                  <div className="flex justify-between items-center pt-2 border-t">
+                  <div className="flex justify-between items-center pt-4 border-t mt-4">
                     <span className="text-sm text-muted-foreground">Task Status</span>
                     <Button
                       size="sm"

@@ -9,8 +9,11 @@ import WhitelistPage from '@/pages/WhitelistPage';
 import DebugPage from '@/pages/DebugPage';
 import SettingsPage from '@/pages/SettingsPage';
 import APIKeysPage from '@/pages/APIKeysPage';
+import CredentialsPage from '@/pages/CredentialsPage';
 import ReleaseNotesPage from '@/pages/ReleaseNotesPage';
 import SupportPage from '@/pages/SupportPage';
+import EmailTestPage from '@/pages/EmailTestPage';
+import UrlTestPage from '@/pages/UrlTestPage';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, loading } = useAuth();
@@ -84,6 +87,26 @@ function AppRoutes() {
         }
       />
       <Route
+        path="/testing/email"
+        element={
+          <ProtectedRoute>
+            <DashboardLayout>
+              <EmailTestPage />
+            </DashboardLayout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/testing/url"
+        element={
+          <ProtectedRoute>
+            <DashboardLayout>
+              <UrlTestPage />
+            </DashboardLayout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
         path="/settings"
         element={
           <ProtectedRoute>
@@ -103,6 +126,18 @@ function AppRoutes() {
           </ProtectedRoute>
         }
       />
+      {/* Temporarily hidden from UI - keeping code for future use
+      <Route
+        path="/credentials"
+        element={
+          <ProtectedRoute>
+            <DashboardLayout>
+              <CredentialsPage />
+            </DashboardLayout>
+          </ProtectedRoute>
+        }
+      />
+      */}
       <Route
         path="/release-notes"
         element={

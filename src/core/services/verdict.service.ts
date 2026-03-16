@@ -1,6 +1,9 @@
 /**
  * Verdict Service
  * Calculates final verdict, score, red flags, and alert level from analysis signals
+ *
+ * DESIGN: JSON-driven, signal-agnostic architecture.
+ * All signal-specific logic is defined in signal-config.json.
  */
 
 import type {
@@ -13,6 +16,16 @@ import type {
 import type { AppConfig } from '../../config/app.config.js';
 import { getConfig } from '../../config/index.js';
 import { getLogger } from '../../infrastructure/logging/index.js';
+import {
+  loadSignalConfig,
+  hasCriticalOverride,
+  canDowngradeSignal,
+  getDowngradeConditions,
+  getSeverityMultiplier,
+  getVerdictActions,
+  type SignalConfig,
+  type ReputationContext,
+} from '../models/signal-config.js';
 
 const logger = getLogger();
 
@@ -26,35 +39,90 @@ export interface VerdictResult {
   alertLevel: AlertLevel;
   redFlags: RedFlag[];
   reasoning: string;
+  actions: string[]; // NEW: Action items from signal config
 }
 
 /**
  * Verdict Service
  */
 export class VerdictService {
-  constructor(private config: AppConfig) {}
+  private signalConfig: SignalConfig;
+
+  constructor(private config: AppConfig) {
+    // Load signal configuration at initialization
+    this.signalConfig = loadSignalConfig();
+    logger.info({
+      msg: 'Signal configuration loaded',
+      version: this.signalConfig.version,
+      signalTypes: Object.keys(this.signalConfig.signalTypes).length,
+    });
+  }
 
   /**
-   * Calculate verdict from analysis signals
+   * Calculate verdict from analysis signals (Enterprise-grade with multi-stage processing)
    */
   calculateVerdict(signals: AnalysisSignal[], analyzerWeights: Map<string, number>): VerdictResult {
-    // Calculate weighted confidence score
-    const confidence = this.calculateConfidence(signals, analyzerWeights);
+    // Stage 1: Critical Threat Detection (Immediate Override)
+    const criticalThreat = this.detectCriticalThreat(signals);
+    if (criticalThreat) {
+      logger.warn({
+        msg: 'Critical threat detected - bypassing weighted calculation',
+        reason: criticalThreat.reason,
+      });
 
-    // Convert to 0-10 score
-    const score = this.convertToUserScore(confidence);
+      const redFlags = this.generateRedFlags(signals);
+      const reasoning = this.generateActionGuidance('Malicious', signals, redFlags);
+      const actions = getVerdictActions(this.signalConfig, 'Malicious');
 
-    // Determine verdict
-    const verdict = this.determineVerdict(confidence);
+      return {
+        verdict: 'Malicious',
+        confidence: 0.9,
+        score: 9.0,
+        alertLevel: 'high',
+        redFlags,
+        reasoning,
+        actions,
+      };
+    }
 
-    // Calculate alert level
+    // Stage 1.5: Process signals with context (NEW - JSON-driven downgrades)
+    const processedSignals = this.processSignalsWithContext(signals);
+
+    // Stage 2: Context-Aware Weighted Calculation (use processedSignals)
+    const confidence = this.calculateConfidenceWithContext(processedSignals, analyzerWeights);
+
+    // Stage 3: Convert to 0-10 score
+    let score = this.convertToUserScore(confidence);
+
+    // Stage 4: Determine base verdict from thresholds
+    let verdict = this.determineVerdict(confidence);
+
+    // Stage 5: Severity Override (high/critical signals never result in Safe)
+    const hasHighSeveritySignals = processedSignals.some(
+      (s) => s.severity === 'high' || s.severity === 'critical'
+    );
+    if (hasHighSeveritySignals && verdict === 'Safe') {
+      verdict = 'Suspicious';
+      score = Math.max(score, this.config.analysis.thresholds.suspicious * 10);
+
+      logger.info({
+        msg: 'Verdict overridden due to high-severity signals',
+        originalVerdict: 'Safe',
+        newVerdict: 'Suspicious',
+        originalScore: this.convertToUserScore(confidence),
+        adjustedScore: score,
+      });
+    }
+
+    // Stage 6: Calculate alert level
     const alertLevel = this.calculateAlertLevel(score, verdict);
 
-    // Generate red flags
-    const redFlags = this.generateRedFlags(signals);
+    // Stage 7: Generate red flags and action-oriented guidance
+    const redFlags = this.generateRedFlags(processedSignals);
+    const reasoning = this.generateActionGuidance(verdict, processedSignals, redFlags);
 
-    // Generate reasoning
-    const reasoning = this.generateReasoning(verdict, signals, redFlags);
+    // Stage 8: Get actions from signal config (NEW - JSON-driven actions)
+    const actions = getVerdictActions(this.signalConfig, verdict);
 
     logger.debug({
       msg: 'Verdict calculated',
@@ -63,6 +131,7 @@ export class VerdictService {
       score,
       alertLevel,
       redFlagsCount: redFlags.length,
+      actionsCount: actions.length,
     });
 
     return {
@@ -72,11 +141,253 @@ export class VerdictService {
       alertLevel,
       redFlags,
       reasoning,
+      actions,
     };
   }
 
   /**
-   * Calculate weighted confidence from signals
+   * Stage 1: Detect critical threats that bypass weighted calculation
+   * Uses signal-config.json to determine which signals have critical override
+   */
+  private detectCriticalThreat(signals: AnalysisSignal[]): { reason: string } | null {
+    // Check for any signal with criticalOverride flag in config
+    for (const signal of signals) {
+      if (
+        signal.severity === 'critical' &&
+        hasCriticalOverride(this.signalConfig, signal.signalType)
+      ) {
+        return {
+          reason: signal.description || `Critical threat detected: ${signal.signalType}`,
+        };
+      }
+    }
+
+    // Multiple critical URL threats (2+ sources)
+    const criticalUrlThreats = signals.filter(
+      (s) =>
+        s.severity === 'critical' &&
+        hasCriticalOverride(this.signalConfig, s.signalType) &&
+        ['url_flagged_malicious', 'domain_blacklisted', 'automatic_download_detected'].includes(
+          s.signalType
+        )
+    );
+    if (criticalUrlThreats.length >= 2) {
+      return { reason: 'Multiple critical threat indicators detected' };
+    }
+
+    return null;
+  }
+
+  /**
+   * Stage 1.5: Process signals with cross-analyzer context awareness
+   * Downgrade signals when reputation analyzers indicate legitimate domain
+   * NEVER downgrade malicious behavior signals (downloads, script execution, etc.)
+   */
+  private processSignalsWithContext(signals: AnalysisSignal[]): AnalysisSignal[] {
+    const reputationContext = this.analyzeReputationContext(signals);
+
+    if (reputationContext.isClean) {
+      logger.debug({
+        msg: 'Clean reputation detected - checking for downgradeable signals',
+        linkSignalCount: reputationContext.linkSignalCount,
+        senderSignalCount: reputationContext.senderSignalCount,
+      });
+
+      return signals.map((signal) => {
+        // Check if signal can be downgraded (from config)
+        if (!canDowngradeSignal(this.signalConfig, signal.signalType)) {
+          return signal; // No downgrade - keep original
+        }
+
+        // Get downgrade conditions from config
+        const downgradeConditions = getDowngradeConditions(
+          this.signalConfig,
+          signal.signalType
+        );
+        if (!downgradeConditions) {
+          return signal; // No conditions defined
+        }
+
+        // Check if downgrade conditions are met
+        if (this.shouldDowngrade(signal, downgradeConditions, reputationContext)) {
+          const action = downgradeConditions.action;
+
+          logger.debug({
+            msg: 'Downgrading signal due to clean reputation',
+            signalType: signal.signalType,
+            originalSeverity: signal.severity,
+            newSeverity: action.newSeverity,
+            originalConfidence: signal.confidence,
+          });
+
+          return {
+            ...signal,
+            severity: action.newSeverity,
+            confidence: signal.confidence * action.confidenceMultiplier,
+            description: `${signal.description} (downgraded: ${action.reason})`,
+            evidence: {
+              ...signal.evidence,
+              contextDowngraded: true,
+              originalSeverity: signal.severity,
+              originalConfidence: signal.confidence,
+              downgradeReason: action.reason,
+            },
+          };
+        }
+
+        return signal;
+      });
+    }
+
+    logger.debug({
+      msg: 'Threat indicators detected - no downgrading',
+      threatSignals: reputationContext.threatSignals,
+    });
+
+    return signals; // Threats detected - keep original
+  }
+
+  /**
+   * Check if signal should be downgraded based on conditions
+   */
+  private shouldDowngrade(
+    signal: AnalysisSignal,
+    conditions: NonNullable<ReturnType<typeof getDowngradeConditions>>,
+    context: ReputationContext
+  ): boolean {
+    const { requireCleanReputation, logic } = conditions;
+
+    // Build checks array
+    const checks: boolean[] = [];
+
+    if (requireCleanReputation.includes('link')) {
+      checks.push(context.isClean && context.linkSignalCount === 0);
+    }
+
+    if (requireCleanReputation.includes('sender')) {
+      checks.push(context.isClean && context.senderSignalCount === 0);
+    }
+
+    // Apply logic operator
+    if (logic === 'AND') {
+      return checks.every((check) => check);
+    } else {
+      // OR logic
+      return checks.some((check) => check);
+    }
+  }
+
+  /**
+   * Analyze reputation signals to determine if domain/sender is clean
+   */
+  private analyzeReputationContext(signals: AnalysisSignal[]): ReputationContext {
+    const linkReputationSignals = signals.filter(
+      (s) => s.analyzerName === 'LinkReputationAnalyzer'
+    );
+    const senderReputationSignals = signals.filter(
+      (s) => s.analyzerName === 'SenderReputationAnalyzer'
+    );
+
+    // Threat signal types (negative indicators)
+    const threatSignalTypes = new Set([
+      'url_flagged_malicious',
+      'url_flagged_suspicious',
+      'url_in_malware_database',
+      'url_in_phishing_database',
+      'domain_blacklisted',
+      'domain_recently_registered',
+      'mx_record_missing',
+      'dns_a_record_missing',
+      'invalid_email_format',
+      'disposable_email',
+      'spf_fail',
+      'dkim_fail',
+    ]);
+
+    // Positive signals (NOT threats)
+    const positiveSignalTypes = new Set(['spf_pass', 'dkim_pass', 'domain_reputation_good']);
+
+    const threatSignals = signals.filter(
+      (s) =>
+        (s.analyzerName === 'LinkReputationAnalyzer' ||
+          s.analyzerName === 'SenderReputationAnalyzer') &&
+        threatSignalTypes.has(s.signalType) &&
+        !positiveSignalTypes.has(s.signalType)
+    );
+
+    const hasThreats = threatSignals.length > 0;
+    const isClean = !hasThreats;
+
+    return {
+      isClean,
+      linkSignalCount: linkReputationSignals.filter((s) => threatSignalTypes.has(s.signalType))
+        .length,
+      senderSignalCount: senderReputationSignals.filter((s) =>
+        threatSignalTypes.has(s.signalType)
+      ).length,
+      hasThreats,
+      threatSignals: threatSignals.map((s) => s.signalType),
+    };
+  }
+
+  /**
+   * Stage 2: Context-aware weighted calculation with dynamic adjustments
+   */
+  private calculateConfidenceWithContext(signals: AnalysisSignal[], analyzerWeights: Map<string, number>): number {
+    if (signals.length === 0) {
+      return 0;
+    }
+
+    // Check for content-based threats
+    const hasContentThreats = signals.some(s =>
+      ['negative_sentiment_high', 'emotional_pressure_detected', 'language_anomaly_detected',
+       'brand_impersonation_suspected'].includes(s.signalType) && s.severity !== 'low'
+    );
+
+    // Check for threat intelligence confirmations
+    const hasThreatIntel = signals.some(s =>
+      ['url_flagged_malicious', 'url_flagged_suspicious', 'url_in_malware_database',
+       'url_in_phishing_database', 'domain_blacklisted'].includes(s.signalType)
+    );
+
+    let weightedSum = 0;
+    let totalWeight = 0;
+
+    for (const signal of signals) {
+      const weight = analyzerWeights.get(signal.analyzerName) ?? 1.0;
+      let signalValue = this.getSignalValue(signal);
+
+      // Context 1: Reduce positive signals when content threats exist
+      if (hasContentThreats && signalValue < 0) {
+        const reduction = this.config.analysis.signalAdjustments.contextPositiveReduction;
+        signalValue = signalValue * (1 - reduction);
+      }
+
+      // Context 2: Boost threat intel signals when multiple sources agree
+      if (hasThreatIntel && signalValue > 0 &&
+          ['LinkReputationAnalyzer', 'SenderReputationAnalyzer'].includes(signal.analyzerName)) {
+        const boost = this.config.analysis.signalAdjustments.contextThreatIntelBoost;
+        signalValue = signalValue * (1 + boost);
+      }
+
+      // Context 3: Amplify critical signals
+      if (signal.severity === 'critical') {
+        const boost = this.config.analysis.signalAdjustments.contextCriticalBoost;
+        signalValue = signalValue * (1 + boost);
+      }
+
+      weightedSum += signalValue * signal.confidence * weight;
+      totalWeight += weight;
+    }
+
+    const avgConfidence = totalWeight > 0 ? weightedSum / totalWeight : 0;
+
+    // Clamp to [0, 1]
+    return Math.max(0, Math.min(1, avgConfidence));
+  }
+
+  /**
+   * Calculate weighted confidence from signals (Legacy - kept for compatibility)
    */
   private calculateConfidence(signals: AnalysisSignal[], analyzerWeights: Map<string, number>): number {
     if (signals.length === 0) {
@@ -104,24 +415,18 @@ export class VerdictService {
 
   /**
    * Get signal value (positive or negative)
+   * Uses signal-config.json for severity multipliers
    */
   private getSignalValue(signal: AnalysisSignal): number {
-    // Positive signals (decrease risk)
+    // Positive signals (decrease risk) - configurable impact
     const positiveSignals = ['spf_pass', 'dkim_pass', 'domain_reputation_good'];
 
     if (positiveSignals.includes(signal.signalType)) {
-      return -0.5; // Reduce risk
+      return -this.config.analysis.signalAdjustments.positiveSignalValue;
     }
 
-    // Negative signals (increase risk) - weighted by severity
-    const severityMultiplier = {
-      low: 0.25,
-      medium: 0.5,
-      high: 0.75,
-      critical: 1.0,
-    };
-
-    return severityMultiplier[signal.severity];
+    // Negative signals (increase risk) - weighted by severity from config
+    return getSeverityMultiplier(this.signalConfig, signal.severity);
   }
 
   /**
@@ -210,15 +515,43 @@ export class VerdictService {
 
   /**
    * Categorize signal type
+   * Uses signal-config.json categories when available, falls back to heuristics
    */
   private categorizeSignal(signalType: string): RedFlagCategory {
+    // Try to get category from signal config
+    const signalTypeConfig = this.signalConfig.signalTypes[signalType];
+    if (signalTypeConfig) {
+      const category = signalTypeConfig.category;
+      // Map config categories to RedFlagCategory
+      if (category === 'email_authentication') return 'authentication';
+      if (category === 'sender_validation') return 'sender';
+      if (category === 'reputation' || category === 'url_pattern' || category === 'redirect_chain')
+        return 'url';
+      if (category === 'credential_harvesting' || category === 'content_analysis') return 'content';
+      if (
+        category === 'malicious_behavior' ||
+        category === 'attachment' ||
+        category === 'dns_validation'
+      )
+        return 'suspicious_behavior';
+    }
+
+    // Fallback heuristics for unknown signals
     if (['spf_fail', 'dkim_fail', 'header_anomaly'].includes(signalType)) {
       return 'authentication';
     }
     if (['sender_mismatch'].includes(signalType)) {
       return 'sender';
     }
-    if (['high_entropy_url', 'suspicious_tld', 'url_shortener', 'https_missing', 'suspicious_redirect'].includes(signalType)) {
+    if (
+      [
+        'high_entropy_url',
+        'suspicious_tld',
+        'url_shortener',
+        'https_missing',
+        'suspicious_redirect',
+      ].includes(signalType)
+    ) {
       return 'url';
     }
     if (['phishing_keywords', 'form_detected'].includes(signalType)) {
@@ -236,7 +569,105 @@ export class VerdictService {
   }
 
   /**
-   * Generate reasoning explanation
+   * Generate action-oriented plain English guidance for end users
+   */
+  private generateActionGuidance(verdict: Verdict, signals: AnalysisSignal[], redFlags: RedFlag[]): string {
+    const parts: string[] = [];
+
+    // Verdict statement with immediate action
+    if (verdict === 'Malicious') {
+      parts.push('⚠️ DANGER: This is a phishing attempt or malware.');
+      parts.push('ACTION REQUIRED: Delete this email immediately. Do not click any links or open attachments.');
+
+      // Specific threats
+      const hasMalware = signals.some((s) => s.signalType.includes('malware'));
+      const hasPhishingUrl = signals.some((s) => s.signalType.includes('phishing_database'));
+      const hasAutomaticDownload = signals.some((s) =>
+        s.signalType.includes('automatic_download_detected')
+      );
+      const hasScriptExecution = signals.some((s) =>
+        s.signalType.includes('script_execution_detected')
+      );
+      const hasInstallationPrompt = signals.some((s) =>
+        s.signalType.includes('installation_prompt_detected')
+      );
+
+      if (hasMalware) {
+        parts.push('⚠️ Malware detected in attachment - do not download or open.');
+      }
+      if (hasPhishingUrl) {
+        parts.push('⚠️ Known phishing link detected - clicking could compromise your account.');
+      }
+      if (hasAutomaticDownload) {
+        parts.push('⚠️ Automatic download attempt detected - do not proceed to this website.');
+      }
+      if (hasScriptExecution) {
+        parts.push('⚠️ Malicious script execution detected - close browser immediately.');
+      }
+      if (hasInstallationPrompt) {
+        parts.push(
+          '⚠️ Software installation prompt detected - do not install anything from this source.'
+        );
+      }
+
+      parts.push('Report this email to your IT security team immediately.');
+
+    } else if (verdict === 'Suspicious') {
+      parts.push('⚠️ CAUTION: This email shows suspicious characteristics.');
+      parts.push('RECOMMENDED ACTION: Do not interact with this email until verified.');
+
+      // Categorize red flags
+      const categories = this.categorizeRedFlags(redFlags);
+
+      if (categories.authentication.length > 0) {
+        parts.push('• Sender verification failed - email may be spoofed.');
+      }
+      if (categories.url.length > 0) {
+        parts.push('• Suspicious or unverified links detected - do not click.');
+      }
+      if (categories.content.length > 0) {
+        parts.push('• Email uses pressure tactics or suspicious language.');
+      }
+      if (categories.sender.length > 0) {
+        parts.push('• Sender domain or email address appears suspicious.');
+      }
+
+      parts.push('If you were expecting this email, verify with sender through alternate channel (phone/in-person).');
+
+    } else {
+      // Safe
+      parts.push('✅ No significant security concerns detected.');
+
+      // Positive indicators
+      const positiveSignals = signals.filter(s =>
+        ['spf_pass', 'dkim_pass', 'domain_reputation_good'].includes(s.signalType)
+      );
+
+      if (positiveSignals.length > 0) {
+        parts.push('Sender authentication passed. This appears to be legitimate.');
+      }
+
+      parts.push('BEST PRACTICE: Still verify unexpected requests for sensitive information or urgent actions.');
+    }
+
+    return parts.join(' ');
+  }
+
+  /**
+   * Helper to categorize red flags for better guidance
+   */
+  private categorizeRedFlags(redFlags: RedFlag[]): Record<RedFlagCategory, RedFlag[]> {
+    return {
+      authentication: redFlags.filter(f => f.category === 'authentication'),
+      url: redFlags.filter(f => f.category === 'url'),
+      content: redFlags.filter(f => f.category === 'content'),
+      sender: redFlags.filter(f => f.category === 'sender'),
+      suspicious_behavior: redFlags.filter(f => f.category === 'suspicious_behavior'),
+    };
+  }
+
+  /**
+   * Generate reasoning explanation (Legacy - kept for compatibility)
    */
   private generateReasoning(verdict: Verdict, signals: AnalysisSignal[], redFlags: RedFlag[]): string {
     const parts: string[] = [];

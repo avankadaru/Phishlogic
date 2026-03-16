@@ -41,25 +41,49 @@ export async function getRecentAnalyses(
     reply.send({
       success: true,
       data: {
-        analyses: result.items.map((analysis) => ({
-          id: analysis.id,
-          inputType: analysis.inputType,
-          inputSource: analysis.inputSource,
-          verdict: analysis.verdict,
-          confidenceScore: analysis.confidence,
-          riskFactors: analysis.redFlags,
-          executionMode: analysis.executionMode,
-          aiProvider: analysis.aiMetadata?.provider,
-          aiModel: analysis.aiMetadata?.model,
-          processingTimeMs: analysis.durationMs,
-          costUsd: analysis.aiMetadata?.costUsd,
-          tokensUsed: analysis.aiMetadata?.tokens?.total,
-          whitelisted: analysis.whitelisted,
-          whitelistReason: analysis.whitelistReason,
-          errorMessage: analysis.errorDetails?.message,
-          createdAt: analysis.createdAt,
-          tenantId: analysis.tenantId,
-        })),
+        analyses: result.items.map((analysis) => {
+          // Extract trustLevel and contentRisk from execution steps if available
+          const whitelistCheckStep = analysis.executionSteps?.find(
+            (step: any) => step.step === 'whitelist_check_started' && step.status === 'completed'
+          );
+          const contentRiskStep = analysis.executionSteps?.find(
+            (step: any) => step.step === 'content_risk_analysis_started' && step.status === 'completed'
+          );
+
+          const trustLevel = whitelistCheckStep?.context?.trustLevel;
+          const contentRisk = contentRiskStep?.context
+            ? {
+                hasLinks: contentRiskStep.context.hasLinks || false,
+                hasAttachments: contentRiskStep.context.hasAttachments || false,
+                hasUrgencyLanguage: contentRiskStep.context.hasUrgency || false,
+                overallRiskScore: contentRiskStep.context.riskScore || 0,
+              }
+            : undefined;
+
+          return {
+            id: analysis.id,
+            inputType: analysis.inputType,
+            inputSource: analysis.inputSource,
+            verdict: analysis.verdict,
+            confidenceScore: analysis.confidence,
+            riskFactors: analysis.redFlags,
+            executionMode: analysis.executionMode,
+            aiProvider: analysis.aiMetadata?.provider,
+            aiModel: analysis.aiMetadata?.model,
+            processingTimeMs: analysis.durationMs,
+            costUsd: analysis.aiMetadata?.costUsd,
+            tokensUsed: analysis.aiMetadata?.tokens?.total,
+            whitelisted: analysis.whitelisted,
+            whitelistReason: analysis.whitelistReason,
+            trustLevel,
+            analyzersRun: analysis.analyzersRun || [],
+            executionSteps: analysis.executionSteps || [],
+            contentRisk,
+            errorMessage: analysis.errorDetails?.message,
+            createdAt: analysis.createdAt,
+            tenantId: analysis.tenantId,
+          };
+        }),
         pagination: {
           total: result.total,
           limit: result.limit,
@@ -108,6 +132,24 @@ export async function getAnalysisById(
       return;
     }
 
+    // Extract trustLevel and contentRisk from execution steps if available
+    const whitelistCheckStep = analysis.executionSteps?.find(
+      (step: any) => step.step === 'whitelist_check_started' && step.status === 'completed'
+    );
+    const contentRiskStep = analysis.executionSteps?.find(
+      (step: any) => step.step === 'content_risk_analysis_started' && step.status === 'completed'
+    );
+
+    const trustLevel = whitelistCheckStep?.context?.trustLevel;
+    const contentRisk = contentRiskStep?.context
+      ? {
+          hasLinks: contentRiskStep.context.hasLinks || false,
+          hasAttachments: contentRiskStep.context.hasAttachments || false,
+          hasUrgencyLanguage: contentRiskStep.context.hasUrgency || false,
+          overallRiskScore: contentRiskStep.context.riskScore || 0,
+        }
+      : undefined;
+
     // Transform domain model to API response
     reply.send({
       success: true,
@@ -133,6 +175,8 @@ export async function getAnalysisById(
         tokensUsed: analysis.aiMetadata?.tokens?.total,
         whitelisted: analysis.whitelisted,
         whitelistReason: analysis.whitelistReason,
+        trustLevel,
+        contentRisk,
         errorMessage: analysis.errorDetails?.message,
         errorDetails: analysis.errorDetails, // Full error details
         createdAt: analysis.createdAt,

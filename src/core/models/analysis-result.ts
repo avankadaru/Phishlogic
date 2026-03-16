@@ -27,12 +27,64 @@ export type SignalType =
   | 'suspicious_tld'
   | 'new_domain'
   | 'https_missing'
-  | 'certificate_invalid';
+  | 'certificate_invalid'
+  // Sender Reputation Analyzer (Phase 1 - Systematic Validation)
+  | 'invalid_email_format'
+  | 'disposable_email'
+  | 'role_based_email'
+  | 'mx_record_missing'
+  | 'dns_a_record_missing'
+  | 'spf_not_configured'
+  | 'dmarc_not_configured'
+  | 'dns_lookup_failed'
+  | 'domain_recently_registered'
+  | 'whois_privacy_protection'
+  | 'domain_blacklisted'
+  // Header Analyzer additions
+  | 'prize_scam'
+  | 'sensitive_info_request'
+  // Link Reputation Analyzer (Phase 2 - Threat Intelligence)
+  | 'url_flagged_malicious'
+  | 'url_flagged_suspicious'
+  | 'url_in_malware_database'
+  | 'url_in_phishing_database'
+  // Attachment Analyzer (Phase 3 - File Analysis)
+  | 'attachment_dangerous_type'
+  | 'attachment_suspicious_type'
+  | 'attachment_type_mismatch'
+  // Content Analysis Analyzer (Phase 4 - ML/NLP, NO keywords)
+  | 'negative_sentiment_high'
+  | 'emotional_pressure_detected'
+  | 'language_anomaly_detected'
+  | 'brand_impersonation_suspected'
+  | 'poor_readability'
+  // Button/CTA Analyzer (Phase 5 - Button tracking and redirects)
+  | 'button_hidden_redirect'
+  | 'button_text_mismatch'
+  | 'button_tracking_detected'
+  // Image Analyzer (Phase 5 - OCR and EXIF analysis)
+  | 'image_contains_phishing_text'
+  | 'image_metadata_suspicious'
+  // QR Code Analyzer (Phase 5 - QR code decoding and URL validation)
+  | 'qrcode_malicious_url'
+  | 'qrcode_suspicious_url'
+  | 'qrcode_url_obfuscated'
+  | 'qrcode_suspicious_content'
+  // Malicious Behavior Detection (NEW - Drive-by downloads, script execution, installations)
+  | 'automatic_download_detected'
+  | 'script_execution_detected'
+  | 'installation_prompt_detected'
+  | 'suspicious_javascript_detected';
 
 /**
  * Severity levels for analysis signals
  */
 export type SignalSeverity = 'low' | 'medium' | 'high' | 'critical';
+
+/**
+ * Alias for SignalSeverity (for backwards compatibility)
+ */
+export type Severity = SignalSeverity;
 
 /**
  * Individual signal produced by an analyzer
@@ -131,6 +183,66 @@ export interface AnalysisMetadata {
 
   /** Execution tracking for audit trail */
   executionSteps?: ExecutionStep[];
+
+  /** Trust level from whitelist (if whitelisted) */
+  trustLevel?: 'high' | 'medium' | 'low';
+
+  /** Content risk assessment profile */
+  contentRisk?: {
+    hasLinks: boolean;
+    hasAttachments: boolean;
+    hasUrgencyLanguage: boolean;
+    overallRiskScore: number;
+  };
+
+  /** Risk score (0-10) from content risk analyzer */
+  riskScore?: number;
+
+  /** Bypass type for whitelisted entries */
+  bypassType?: 'full' | 'selective' | 'none';
+
+  /** Cost summary for operations performed during analysis */
+  costSummary?: CostSummary;
+}
+
+/**
+ * Cost tracking for analysis operations
+ */
+export interface CostSummary {
+  /** Total cost in USD for all operations */
+  totalCostUsd: number;
+
+  /** Detailed breakdown of operations and their costs */
+  operations: CostOperation[];
+}
+
+/**
+ * Individual cost operation tracking
+ */
+export interface CostOperation {
+  /** Type of operation performed */
+  operationType: 'ai_api_call' | 'whois_lookup' | 'browser_automation' | 'dns_lookup' | 'external_api_call';
+
+  /** Human-readable description of the operation */
+  description: string;
+
+  /** Number of times this operation was performed */
+  count: number;
+
+  /** Cost in USD (if applicable) */
+  costUsd?: number;
+
+  /** Additional metadata about the operation */
+  metadata?: {
+    /** Service provider (e.g., 'anthropic', 'openai', 'virustotal') */
+    provider?: string;
+    /** Model used (for AI calls) */
+    model?: string;
+    /** Tokens used (for AI calls) */
+    tokensUsed?: number;
+    /** Whether an API key was used */
+    apiKeyUsed?: boolean;
+  };
 }
 
 /**

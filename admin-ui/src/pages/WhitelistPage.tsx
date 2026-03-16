@@ -2,8 +2,9 @@ import { useEffect, useState } from 'react';
 import api from '@/lib/api';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
+import { Select } from '@/components/ui/Select';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
-import type { WhitelistEntry, WhitelistType } from '@/types';
+import type { WhitelistEntry, WhitelistType, TrustLevel } from '@/types';
 import { Shield, Plus, Trash2 } from 'lucide-react';
 
 export default function WhitelistPage() {
@@ -14,6 +15,7 @@ export default function WhitelistPage() {
     type: 'domain' as WhitelistType,
     value: '',
     description: '',
+    trustLevel: 'high' as TrustLevel,
   });
 
   useEffect(() => {
@@ -36,7 +38,7 @@ export default function WhitelistPage() {
 
     try {
       await api.post('/admin/whitelist', newEntry);
-      setNewEntry({ type: 'domain', value: '', description: '' });
+      setNewEntry({ type: 'domain', value: '', description: '', trustLevel: 'high' });
       setShowAdd(false);
       await loadEntries();
     } catch (error) {
@@ -117,6 +119,20 @@ export default function WhitelistPage() {
                 onChange={(e) => setNewEntry({ ...newEntry, description: e.target.value })}
               />
             </div>
+            <div>
+              <label className="text-sm font-medium mb-2 block">Trust Level</label>
+              <Select
+                value={newEntry.trustLevel}
+                onChange={(e) => setNewEntry({ ...newEntry, trustLevel: e.target.value as TrustLevel })}
+              >
+                <option value="high">High - Bypass if no risk indicators</option>
+                <option value="medium">Medium - Always verify links/attachments</option>
+                <option value="low">Low - Full analysis (skip expensive checks)</option>
+              </Select>
+              <p className="text-xs text-muted-foreground mt-1">
+                Controls which analyzers run for this trusted source
+              </p>
+            </div>
             <div className="flex space-x-2">
               <Button onClick={handleAdd}>Add Entry</Button>
               <Button variant="outline" onClick={() => setShowAdd(false)}>
@@ -150,6 +166,15 @@ export default function WhitelistPage() {
                         <span className="px-2 py-0.5 text-xs rounded-full bg-primary/10 text-primary">
                           {entry.type}
                         </span>
+                        {entry.trustLevel && (
+                          <span className={`px-2 py-0.5 text-xs rounded-full ${
+                            entry.trustLevel === 'high' ? 'bg-green-100 text-green-700' :
+                            entry.trustLevel === 'medium' ? 'bg-yellow-100 text-yellow-700' :
+                            'bg-orange-100 text-orange-700'
+                          }`}>
+                            {entry.trustLevel.toUpperCase()}
+                          </span>
+                        )}
                       </div>
                       {entry.description && (
                         <p className="text-sm text-muted-foreground mt-1">

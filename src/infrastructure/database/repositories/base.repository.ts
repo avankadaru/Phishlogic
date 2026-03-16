@@ -7,10 +7,12 @@
  * - Views for specific formats (not column changes)
  * - Performance-first column additions (only when critical)
  * - Data Mapper pattern (DB models ≠ Domain models)
+ * - Type Converter Pattern for JSONB columns (automatic serialization)
  */
 
 import { query as dbQuery, QueryResult } from '../client.js';
 import { getLogger } from '../../logging/logger.js';
+import { processValuesForTable } from './jsonb-type-converter.js';
 
 const logger = getLogger();
 
@@ -28,14 +30,14 @@ export interface QueryOptions {
  * Base Repository - All repositories extend this
  * Provides common CRUD operations and query utilities
  */
-export abstract class BaseRepository<TDomain, TDatabase = any> {
+export abstract class BaseRepository<TDomain, TDatabase extends Record<string, any> = any> {
   constructor(protected tableName: string) {}
 
   /**
    * Execute raw SQL query (internal use only)
    * All external code should use repository methods
    */
-  protected async executeQuery<T = any>(
+  protected async executeQuery<T extends Record<string, any> = any>(
     sql: string,
     params?: any[]
   ): Promise<QueryResult<T>> {
@@ -62,7 +64,7 @@ export abstract class BaseRepository<TDomain, TDatabase = any> {
     const sql = `SELECT * FROM ${this.tableName} WHERE id = $1`;
     const result = await this.executeQuery<TDatabase>(sql, [id]);
 
-    if (result.rows.length === 0) {
+    if (result.rows.length === 0 || !result.rows[0]) {
       return null;
     }
 
@@ -99,7 +101,7 @@ export abstract class BaseRepository<TDomain, TDatabase = any> {
     const sql = `SELECT COUNT(*) as count FROM ${this.tableName} ${whereClause}`;
 
     const result = await this.executeQuery<{ count: string }>(sql, values);
-    return parseInt(result.rows[0].count, 10);
+    return parseInt(result.rows[0]?.count || '0', 10);
   }
 
   /**
@@ -116,6 +118,9 @@ export abstract class BaseRepository<TDomain, TDatabase = any> {
     `;
 
     const result = await this.executeQuery<TDatabase>(sql, values);
+    if (!result.rows[0]) {
+      throw new Error('Insert failed: no rows returned');
+    }
     return this.mapToDomain(result.rows[0]);
   }
 
@@ -135,7 +140,7 @@ export abstract class BaseRepository<TDomain, TDatabase = any> {
 
     const result = await this.executeQuery<TDatabase>(sql, [...values, id]);
 
-    if (result.rows.length === 0) {
+    if (result.rows.length === 0 || !result.rows[0]) {
       return null;
     }
 
@@ -163,6 +168,9 @@ export abstract class BaseRepository<TDomain, TDatabase = any> {
     `;
 
     const result = await this.executeQuery<TDatabase>(sql, values);
+    if (!result.rows[0]) {
+      throw new Error('Upsert failed: no rows returned');
+    }
     return this.mapToDomain(result.rows[0]);
   }
 
@@ -190,7 +198,7 @@ export abstract class BaseRepository<TDomain, TDatabase = any> {
    * Query JSONB column efficiently
    * Prefer this over adding columns for performance
    */
-  protected async queryJsonb<T = any>(
+  protected async queryJsonb(
     jsonbColumn: string,
     path: string,
     value: any,
@@ -300,10 +308,13 @@ export abstract class BaseRepository<TDomain, TDatabase = any> {
     placeholders: string;
     values: any[];
   } {
-    const keys = Object.keys(data);
+    // Automatically prepare JSONB columns using Type Converter Pattern
+    const processedData = processValuesForTable(this.tableName, data);
+
+    const keys = Object.keys(processedData);
     const columns = keys.join(', ');
     const placeholders = keys.map((_, i) => `$${i + 1}`).join(', ');
-    const values = keys.map((key) => data[key]);
+    const values = keys.map((key) => processedData[key]);
 
     return { columns, placeholders, values };
   }
@@ -312,9 +323,12 @@ export abstract class BaseRepository<TDomain, TDatabase = any> {
     setClause: string;
     values: any[];
   } {
-    const keys = Object.keys(data);
+    // Automatically prepare JSONB columns using Type Converter Pattern
+    const processedData = processValuesForTable(this.tableName, data);
+
+    const keys = Object.keys(processedData);
     const setClause = keys.map((key, i) => `${key} = $${i + 1}`).join(', ');
-    const values = keys.map((key) => data[key]);
+    const values = keys.map((key) => processedData[key]);
 
     return { setClause, values };
   }

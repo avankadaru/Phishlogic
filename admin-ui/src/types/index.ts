@@ -28,6 +28,59 @@ export interface AIModelConfig {
   usageCount?: number;
 }
 
+// API Credentials (External Services)
+export interface ApiCredential {
+  id: string;
+  credentialName: string;
+  displayName: string;
+  description?: string;
+  provider: string;
+  apiKeySanitized: string; // Only first/last 4 chars shown
+  hasApiSecret: boolean;
+  endpointUrl?: string;
+  rateLimitPerDay?: number;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// Task Definition (email analysis tasks: sender_verification, links, attachments, etc.)
+export interface Task {
+  taskName: string;
+  displayName: string;
+  description?: string;
+  inputType: 'email' | 'url';
+  executionOrder: number;
+  isActive: boolean;
+  createdAt: string;
+}
+
+// Analyzer Definition (analyzer implementations: spfAnalyzer, buttonAnalyzer, etc.)
+export interface Analyzer {
+  analyzerName: string;
+  displayName: string;
+  description?: string;
+  analyzerType: 'static' | 'dynamic';
+  defaultWeight: number;
+  isActive: boolean;
+  createdAt: string;
+}
+
+// Task-Analyzer Mapping (which analyzers run in which tasks)
+export interface TaskAnalyzerMapping {
+  id: string;
+  taskName: string;
+  analyzerName: string;
+  executionOrder: number;
+  isLongRunning: boolean;
+  estimatedDurationMs?: number;
+  taskDisplayName?: string;
+  taskDescription?: string;
+  analyzerDisplayName?: string;
+  analyzerDescription?: string;
+  analyzerType?: 'static' | 'dynamic';
+}
+
 // Integration Task (user-facing tasks: Gmail, Chrome, etc.)
 export interface IntegrationTask {
   id: string;
@@ -63,7 +116,7 @@ export interface TaskConfig {
   updated_at: string;
 }
 
-// Cost Analytics
+// Cost Analytics (Aggregated reporting)
 export interface CostSummary {
   period: {
     startDate: string;
@@ -97,14 +150,37 @@ export interface CostSummary {
   }>;
 }
 
+// Per-Analysis Cost Tracking
+export interface CostOperation {
+  operationType: 'ai_api_call' | 'whois_lookup' | 'browser_automation' | 'dns_lookup' | 'external_api_call';
+  description: string;
+  count: number;
+  costUsd?: number;
+  metadata?: {
+    provider?: string;
+    model?: string;
+    tokensUsed?: number;
+    apiKeyUsed?: boolean;
+    browser?: string;
+    urlsChecked?: number;
+  };
+}
+
+export interface AnalysisCostSummary {
+  totalCostUsd: number;
+  operations: CostOperation[];
+}
+
 // Whitelist
 export type WhitelistType = 'email' | 'domain' | 'url';
+export type TrustLevel = 'high' | 'medium' | 'low';
 
 export interface WhitelistEntry {
   id: string;
   type: WhitelistType;
   value: string;
   description?: string;
+  trustLevel?: TrustLevel;
   addedAt: string;
   expiresAt?: string;
   active: boolean;
@@ -130,13 +206,31 @@ export interface WhitelistStats {
 }
 
 // Debug & Analytics
+export interface RedFlag {
+  message: string;
+  category: string;
+  severity: 'low' | 'medium' | 'high' | 'critical';
+}
+
+export interface ExecutionStep {
+  step: string;
+  startedAt?: string;
+  completedAt?: string;
+  duration?: number;
+  status?: 'started' | 'completed' | 'failed' | 'skipped';
+  error?: string;
+  stackTrace?: string;
+  errorContext?: Record<string, unknown>;
+  context?: Record<string, unknown>;
+}
+
 export interface Analysis {
   id: string;
   inputType: string;
   inputSource: string;
   verdict: 'Safe' | 'Suspicious' | 'Malicious';
   confidenceScore: number;
-  riskFactors: string[];
+  riskFactors: RedFlag[] | string[];
   executionMode: string;
   aiProvider?: string;
   aiModel?: string;
@@ -145,6 +239,17 @@ export interface Analysis {
   tokensUsed?: number;
   whitelisted: boolean;
   whitelistReason?: string;
+  trustLevel?: TrustLevel;
+  analyzersRun?: string[];
+  executionSteps?: ExecutionStep[];
+  contentRisk?: {
+    hasLinks: boolean;
+    hasAttachments: boolean;
+    hasUrgencyLanguage: boolean;
+    overallRiskScore: number;
+  };
+  costSummary?: AnalysisCostSummary;
+  skippedTasks?: string[];
   errorMessage?: string;
   createdAt: string;
 }

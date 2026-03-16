@@ -133,6 +133,43 @@ export class HeaderAnalyzer extends BaseAnalyzer {
       );
     }
 
+    // Check for prize/lottery scams in subject and body
+    const prizeScamIndicators = this.checkPrizeScamIndicators(
+      input.data.parsed.subject,
+      input.data.parsed.body.text ?? ''
+    );
+    if (prizeScamIndicators.length > 0) {
+      signals.push(
+        this.createSignal({
+          signalType: 'prize_scam',
+          severity: 'high',
+          confidence: 0.95,
+          description: `Email contains prize/lottery scam indicators: ${prizeScamIndicators.join(', ')}`,
+          evidence: {
+            indicators: prizeScamIndicators,
+          },
+        })
+      );
+    }
+
+    // Check for requests for sensitive information
+    const sensitiveInfoRequests = this.checkSensitiveInfoRequests(
+      input.data.parsed.body.text ?? ''
+    );
+    if (sensitiveInfoRequests.length > 0) {
+      signals.push(
+        this.createSignal({
+          signalType: 'sensitive_info_request',
+          severity: 'high',
+          confidence: 0.9,
+          description: `Email requests sensitive information: ${sensitiveInfoRequests.join(', ')}`,
+          evidence: {
+            requests: sensitiveInfoRequests,
+          },
+        })
+      );
+    }
+
     return signals;
   }
 
@@ -327,5 +364,80 @@ export class HeaderAnalyzer extends BaseAnalyzer {
     }
 
     return found.slice(0, 3); // Limit to first 3 found
+  }
+
+  /**
+   * Check for prize/lottery scam indicators
+   */
+  private checkPrizeScamIndicators(subject: string, body: string): string[] {
+    const indicators = [
+      'congratulations',
+      'you won',
+      'you have won',
+      'you\'ve won',
+      'winner',
+      'selected as',
+      'been selected',
+      'grand prize',
+      'lottery',
+      'jackpot',
+      'claim your prize',
+      'prize notification',
+      'lucky winner',
+      'million',
+      'dollars',
+      'cash prize',
+      'sweepstakes',
+      'free money',
+      'inheritance',
+      'beneficiary',
+    ];
+
+    const combinedText = `${subject} ${body}`.toLowerCase();
+    const found: string[] = [];
+
+    for (const indicator of indicators) {
+      if (combinedText.includes(indicator) && !found.includes(indicator)) {
+        found.push(indicator);
+      }
+    }
+
+    return found;
+  }
+
+  /**
+   * Check for requests for sensitive information
+   */
+  private checkSensitiveInfoRequests(body: string): string[] {
+    const requests = [
+      'social security',
+      'ssn',
+      'bank account',
+      'banking information',
+      'account number',
+      'routing number',
+      'credit card',
+      'card number',
+      'cvv',
+      'security code',
+      'pin number',
+      'password',
+      'date of birth',
+      'driver\'s license',
+      'passport number',
+      'tax id',
+      'ein',
+    ];
+
+    const lowerBody = body.toLowerCase();
+    const found: string[] = [];
+
+    for (const request of requests) {
+      if (lowerBody.includes(request) && !found.includes(request)) {
+        found.push(request);
+      }
+    }
+
+    return found;
   }
 }

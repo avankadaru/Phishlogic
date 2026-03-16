@@ -40,6 +40,7 @@ export const AddWhitelistEntryRequestSchema = z.object({
   value: z.string().min(1, 'Value is required'),
   description: z.string().optional(),
   expiresAt: z.string().datetime().optional().transform((val) => (val ? new Date(val) : undefined)),
+  trustLevel: z.enum(['high', 'medium', 'low']).optional(),
 });
 
 export type AddWhitelistEntryRequest = z.infer<typeof AddWhitelistEntryRequestSchema>;

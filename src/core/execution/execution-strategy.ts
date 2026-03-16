@@ -14,6 +14,8 @@
 import { NormalizedInput } from '../models/input.js';
 import { AnalysisResult, ExecutionStep } from '../models/analysis-result.js';
 import { AIMetadata } from '../services/analysis-persistence.service.js';
+import type { TrustLevel } from '../models/whitelist.js';
+import type { ContentRiskProfile } from '../analyzers/risk/content-risk.analyzer.js';
 
 /**
  * Execution context - all data needed for strategy execution
@@ -42,6 +44,34 @@ export interface ExecutionContext {
 
   /** Execution steps tracking (mutable) */
   executionSteps: ExecutionStep[];
+
+  /** Trust level for whitelist partial bypass (optional) */
+  trustLevel?: TrustLevel;
+
+  /** Content risk profile for content-aware filtering (optional) */
+  riskProfile?: ContentRiskProfile;
+
+  /** Analyzer-specific options keyed by analyzer name (optional) */
+  analyzerOptions?: Record<string, Record<string, any>>;
+
+  /** API credentials for external services (optional) */
+  apiCredentials?: Record<string, {
+    id: string;
+    provider: string;
+    apiKey: string;
+    endpoint?: string;
+  }>;
+
+  /** Cost tracking for operations performed during analysis (mutable) */
+  costTracking?: {
+    operations: Array<{
+      operationType: 'ai_api_call' | 'whois_lookup' | 'browser_automation' | 'dns_lookup' | 'external_api_call';
+      description: string;
+      count: number;
+      costUsd?: number;
+      metadata?: Record<string, any>;
+    }>;
+  };
 }
 
 /**
@@ -133,6 +163,48 @@ export abstract class BaseExecutionStrategy implements ExecutionStrategy {
     const result = await fn();
     const durationMs = Date.now() - startTime;
     return { result, durationMs };
+  }
+
+  /**
+   * Report cost for an operation (AI API call, WHOIS lookup, etc.)
+   */
+  protected reportCost(
+    context: ExecutionContext,
+    operationType: 'ai_api_call' | 'whois_lookup' | 'browser_automation' | 'dns_lookup' | 'external_api_call',
+    description: string,
+    count: number = 1,
+    costUsd?: number,
+    metadata?: Record<string, any>
+  ): void {
+    // Initialize cost tracking if not present
+    if (!context.costTracking) {
+      context.costTracking = { operations: [] };
+    }
+
+    // Find existing operation of same type and description
+    const existingOp = context.costTracking.operations.find(
+      (op) => op.operationType === operationType && op.description === description
+    );
+
+    if (existingOp) {
+      // Increment existing operation
+      existingOp.count += count;
+      if (costUsd) {
+        existingOp.costUsd = (existingOp.costUsd || 0) + costUsd;
+      }
+      if (metadata) {
+        existingOp.metadata = { ...existingOp.metadata, ...metadata };
+      }
+    } else {
+      // Add new operation
+      context.costTracking.operations.push({
+        operationType,
+        description,
+        count,
+        costUsd,
+        metadata,
+      });
+    }
   }
 }
 

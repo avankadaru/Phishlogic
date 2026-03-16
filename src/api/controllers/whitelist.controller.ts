@@ -18,7 +18,7 @@ export async function getWhitelistEntries(
   reply: FastifyReply
 ): Promise<void> {
   try {
-    const entries = whitelistService.getAllEntries();
+    const entries = await whitelistService.getAllEntries();
 
     return reply.status(200).send({
       entries,
@@ -44,7 +44,7 @@ export async function getWhitelistEntry(
   reply: FastifyReply
 ): Promise<void> {
   try {
-    const entry = whitelistService.getEntry(request.params.id);
+    const entry = await whitelistService.getEntry(request.params.id);
 
     if (!entry) {
       return reply.status(404).send({
@@ -73,7 +73,7 @@ export async function addWhitelistEntry(
   reply: FastifyReply
 ): Promise<void> {
   try {
-    const entry = whitelistService.addEntry(request.body);
+    const entry = await whitelistService.addEntry(request.body);
 
     logger.info({
       msg: 'Whitelist entry added via API',

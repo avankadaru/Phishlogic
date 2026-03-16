@@ -8,6 +8,14 @@
 export type WhitelistType = 'email' | 'domain' | 'url';
 
 /**
+ * Trust level for whitelist entries
+ * - high: Complete bypass of all analysis (maximum trust)
+ * - medium: Skip basic analyzers, but check links, attachments, and high-risk content
+ * - low: Skip expensive analyzers only (e.g., dynamic analysis)
+ */
+export type TrustLevel = 'high' | 'medium' | 'low';
+
+/**
  * Whitelist entry
  */
 export interface WhitelistEntry {
@@ -45,6 +53,14 @@ export interface WhitelistEntry {
    * Whether this entry is currently active
    */
   active: boolean;
+
+  /**
+   * Trust level for this whitelist entry (defaults to 'high')
+   * - high: Complete bypass of all analysis
+   * - medium: Skip basic analyzers, but check links/attachments
+   * - low: Skip only expensive analyzers
+   */
+  trustLevel?: TrustLevel;
 }
 
 /**
@@ -65,6 +81,11 @@ export interface WhitelistCheckResult {
    * Reason for the match (e.g., "exact match", "domain match")
    */
   matchReason?: string;
+
+  /**
+   * Trust level of the matched entry
+   */
+  trustLevel?: TrustLevel;
 }
 
 /**
@@ -75,4 +96,5 @@ export interface AddWhitelistEntryOptions {
   value: string;
   description?: string;
   expiresAt?: Date;
+  trustLevel?: TrustLevel;
 }

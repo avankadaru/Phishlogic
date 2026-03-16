@@ -1,0 +1,193 @@
+{
+  "version": "1.0.0",
+  "description": "Signal type configuration for PhishLogic verdict calculation. Defines signal weights, dependencies, and downgrade conditions.",
+  "signalTypes": {
+    "form_detected": {
+      "category": "credential_harvesting",
+      "baseWeight": 1.0,
+      "description": "Detects forms collecting sensitive information (password, email, credit card)",
+      "canDowngrade": true,
+      "downgradeConditions": {
+        "requireCleanReputation": ["link", "sender"],
+        "logic": "AND",
+        "action": {
+          "newSeverity": "low",
+          "confidenceMultiplier": 0.3,
+          "reason": "legitimate domain detected"
+        }
+      }
+    },
+    "automatic_download_detected": {
+      "category": "malicious_behavior",
+      "baseWeight": 3.0,
+      "description": "Detects automatic file downloads without user interaction (drive-by downloads)",
+      "canDowngrade": false,
+      "criticalOverride": true
+    },
+    "script_execution_detected": {
+      "category": "malicious_behavior",
+      "baseWeight": 3.0,
+      "description": "Detects JavaScript code execution attempts (eval, document.write)",
+      "canDowngrade": false,
+      "criticalOverride": true
+    },
+    "installation_prompt_detected": {
+      "category": "malicious_behavior",
+      "baseWeight": 2.5,
+      "description": "Detects software installation prompts or download requests",
+      "canDowngrade": false,
+      "criticalOverride": true
+    },
+    "suspicious_javascript_detected": {
+      "category": "malicious_behavior",
+      "baseWeight": 2.5,
+      "description": "Detects suspicious JavaScript patterns (FileReader, localStorage manipulation, WebAssembly)",
+      "canDowngrade": false,
+      "criticalOverride": true
+    },
+    "suspicious_redirect": {
+      "category": "redirect_chain",
+      "baseWeight": 1.5,
+      "description": "Detects excessive redirect chains or domain changes",
+      "canDowngrade": true,
+      "downgradeConditions": {
+        "requireCleanReputation": ["link"],
+        "logic": "AND",
+        "action": {
+          "newSeverity": "low",
+          "confidenceMultiplier": 0.5,
+          "reason": "legitimate domain redirect"
+        }
+      }
+    },
+    "url_flagged_malicious": {
+      "category": "reputation",
+      "baseWeight": 2.5,
+      "description": "URL flagged as malicious by threat intelligence (URLhaus, PhishTank)",
+      "canDowngrade": false,
+      "criticalOverride": true
+    },
+    "url_flagged_suspicious": {
+      "category": "reputation",
+      "baseWeight": 2.0,
+      "description": "URL flagged as suspicious by threat intelligence",
+      "canDowngrade": false,
+      "criticalOverride": false
+    },
+    "domain_blacklisted": {
+      "category": "reputation",
+      "baseWeight": 2.5,
+      "description": "Domain found in blacklist database",
+      "canDowngrade": false,
+      "criticalOverride": true
+    },
+    "domain_recently_registered": {
+      "category": "reputation",
+      "baseWeight": 1.2,
+      "description": "Domain registered recently (suspicious timing)",
+      "canDowngrade": false,
+      "criticalOverride": false
+    },
+    "spf_fail": {
+      "category": "email_authentication",
+      "baseWeight": 1.4,
+      "description": "SPF authentication failed",
+      "canDowngrade": false,
+      "criticalOverride": false
+    },
+    "dkim_fail": {
+      "category": "email_authentication",
+      "baseWeight": 1.4,
+      "description": "DKIM authentication failed",
+      "canDowngrade": false,
+      "criticalOverride": false
+    },
+    "spf_softfail": {
+      "category": "email_authentication",
+      "baseWeight": 0.8,
+      "description": "SPF soft fail (not definitive)",
+      "canDowngrade": false,
+      "criticalOverride": false
+    },
+    "invalid_email_format": {
+      "category": "sender_validation",
+      "baseWeight": 1.0,
+      "description": "Email address format is invalid",
+      "canDowngrade": false,
+      "criticalOverride": false
+    },
+    "disposable_email": {
+      "category": "sender_validation",
+      "baseWeight": 1.2,
+      "description": "Sender uses disposable email service",
+      "canDowngrade": false,
+      "criticalOverride": false
+    },
+    "mx_record_missing": {
+      "category": "dns_validation",
+      "baseWeight": 1.5,
+      "description": "MX record not found for sender domain",
+      "canDowngrade": false,
+      "criticalOverride": false
+    },
+    "dns_a_record_missing": {
+      "category": "dns_validation",
+      "baseWeight": 1.3,
+      "description": "DNS A record not found for domain",
+      "canDowngrade": false,
+      "criticalOverride": false
+    },
+    "high_entropy_url": {
+      "category": "url_pattern",
+      "baseWeight": 1.2,
+      "description": "URL contains high randomness (possible obfuscation)",
+      "canDowngrade": false,
+      "criticalOverride": false
+    },
+    "suspicious_url_pattern": {
+      "category": "url_pattern",
+      "baseWeight": 1.4,
+      "description": "URL matches suspicious patterns (IP addresses, unusual TLDs, typosquatting)",
+      "canDowngrade": false,
+      "criticalOverride": false
+    },
+    "malicious_attachment_detected": {
+      "category": "attachment",
+      "baseWeight": 2.3,
+      "description": "Email contains potentially malicious attachment",
+      "canDowngrade": false,
+      "criticalOverride": true
+    },
+    "suspicious_content_patterns": {
+      "category": "content_analysis",
+      "baseWeight": 1.6,
+      "description": "Email content matches suspicious patterns (urgency, threats, impersonation)",
+      "canDowngrade": false,
+      "criticalOverride": false
+    }
+  },
+  "verdictActions": {
+    "Malicious": [
+      "Block sender",
+      "Quarantine email",
+      "Alert security team",
+      "Add to blacklist"
+    ],
+    "Suspicious": [
+      "Quarantine email",
+      "Alert security team",
+      "Flag for manual review"
+    ],
+    "Safe": []
+  },
+  "thresholds": {
+    "malicious": 0.7,
+    "suspicious": 0.4
+  },
+  "severityMultipliers": {
+    "critical": 1.0,
+    "high": 0.8,
+    "medium": 0.6,
+    "low": 0.3
+  }
+}

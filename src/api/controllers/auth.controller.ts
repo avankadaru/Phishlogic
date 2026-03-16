@@ -83,9 +83,9 @@ export async function loginAdmin(
       role: 'admin',
       type: 'admin',
     };
-    const secret: jwt.Secret = config.auth.jwtSecret;
+    const secret = config.auth.jwtSecret;
     const token = jwt.sign(payload, secret, {
-      expiresIn: config.auth.jwtExpiresIn,
+      expiresIn: config.auth.jwtExpiresIn as jwt.SignOptions['expiresIn'],
     });
 
     // Update last login

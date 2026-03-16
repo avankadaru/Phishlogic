@@ -13,6 +13,7 @@ import type { NormalizedInput } from '../models/input.js';
 import { isEmailInput, isUrlInput } from '../models/input.js';
 import { getLogger } from '../../infrastructure/logging/index.js';
 import { query } from '../../infrastructure/database/client.js';
+import { getConfig } from '../../config/app.config.js';
 
 const logger = getLogger();
 
@@ -28,6 +29,7 @@ function mapRowToEntry(row: any): WhitelistEntry {
     addedAt: new Date(row.created_at),
     expiresAt: row.expires_at ? new Date(row.expires_at) : undefined,
     active: row.is_active,
+    trustLevel: row.trust_level || 'high',
   };
 }
 
@@ -48,11 +50,13 @@ export class WhitelistService {
   async addEntry(options: AddWhitelistEntryOptions): Promise<WhitelistEntry> {
     const id = randomUUID();
     const normalizedValue = this.normalizeValue(options.value, options.type);
+    const config = getConfig();
+    const trustLevel = options.trustLevel || config.whitelist.defaultTrustLevel;
 
     const result = await query(
       `INSERT INTO whitelist_entries
-       (id, tenant_id, type, value, description, expires_at, added_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       (id, tenant_id, type, value, description, expires_at, added_by, trust_level)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING *`,
       [
         id,
@@ -62,6 +66,7 @@ export class WhitelistService {
         options.description,
         options.expiresAt,
         'system',
+        trustLevel,
       ]
     );
 
@@ -317,6 +322,7 @@ export class WhitelistService {
         isWhitelisted: true,
         matchedEntry: entry,
         matchReason: 'exact email match',
+        trustLevel: entry.trustLevel,
       };
     }
 
@@ -353,6 +359,7 @@ export class WhitelistService {
         isWhitelisted: true,
         matchedEntry: entry,
         matchReason: 'exact domain match',
+        trustLevel: entry.trustLevel,
       };
     }
 
@@ -391,6 +398,7 @@ export class WhitelistService {
         isWhitelisted: true,
         matchedEntry: entry,
         matchReason: isExactMatch ? 'exact URL match' : 'URL prefix match',
+        trustLevel: entry.trustLevel,
       };
     }
 
@@ -489,12 +497,11 @@ export class WhitelistService {
 
     result.rows.forEach((row) => {
       const typeCount = parseInt(row.type_count, 10);
-      total += typeCount;
-      byType[row.type as WhitelistType] = typeCount;
+      const activeCount = parseInt(row.active, 10);
 
-      if (row.is_active) {
-        active += parseInt(row.active, 10);
-      }
+      total += typeCount;
+      active += activeCount;
+      byType[row.type as WhitelistType] = typeCount;
     });
 
     return { total, active, byType };

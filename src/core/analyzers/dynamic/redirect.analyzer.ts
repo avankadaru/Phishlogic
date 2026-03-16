@@ -8,7 +8,7 @@ import type { AnalysisSignal } from '../../models/analysis-result.js';
 import type { NormalizedInput } from '../../models/input.js';
 import { isEmailInput, isUrlInput } from '../../models/input.js';
 import { getLogger } from '../../../infrastructure/logging/index.js';
-import type { Browser } from 'playwright';
+import type { Browser, Page } from 'playwright';
 import { chromium } from 'playwright';
 
 const logger = getLogger();
@@ -34,7 +34,7 @@ export class RedirectAnalyzer extends BaseAnalyzer {
   }
 
   getWeight(): number {
-    return 1.3;
+    return this.config.analysis.analyzerWeights.redirect; // Configurable from env (default: 1.5)
   }
 
   getType(): 'static' | 'dynamic' {
@@ -111,6 +111,76 @@ export class RedirectAnalyzer extends BaseAnalyzer {
               })
             );
           }
+        }
+
+        // Check for malicious behaviors (drive-by downloads, script execution, etc.)
+        const maliciousBehaviors = await this.detectMaliciousBehaviors(url);
+
+        // Automatic downloads detected
+        if (maliciousBehaviors.automaticDownload) {
+          signals.push(
+            this.createSignal({
+              signalType: 'automatic_download_detected',
+              severity: 'critical',
+              confidence: 0.95,
+              description:
+                'Page attempts automatic file download without user interaction',
+              evidence: {
+                url,
+                downloadUrl: maliciousBehaviors.downloadUrl,
+                fileName: maliciousBehaviors.fileName,
+              },
+            })
+          );
+        }
+
+        // Script execution detected
+        if (maliciousBehaviors.scriptExecution) {
+          signals.push(
+            this.createSignal({
+              signalType: 'script_execution_detected',
+              severity: 'critical',
+              confidence: 0.9,
+              description: 'Page attempts to execute JavaScript code automatically',
+              evidence: {
+                url,
+                scriptPatterns: maliciousBehaviors.scriptPatterns,
+              },
+            })
+          );
+        }
+
+        // Installation prompt detected
+        if (maliciousBehaviors.installationPrompt) {
+          signals.push(
+            this.createSignal({
+              signalType: 'installation_prompt_detected',
+              severity: 'high',
+              confidence: 0.85,
+              description: 'Page prompts for software installation',
+              evidence: {
+                url,
+                promptText: maliciousBehaviors.promptText,
+              },
+            })
+          );
+        }
+
+        // Suspicious JavaScript patterns
+        if (maliciousBehaviors.suspiciousJavaScript) {
+          signals.push(
+            this.createSignal({
+              signalType: 'suspicious_javascript_detected',
+              severity: 'high',
+              confidence: 0.8,
+              description:
+                'Page contains suspicious JavaScript patterns (file system access, memory manipulation)',
+              evidence: {
+                url,
+                patterns: maliciousBehaviors.jsPatterns,
+              },
+            })
+          );
         }
       } catch (error) {
         logger.warn({
@@ -196,6 +266,187 @@ export class RedirectAnalyzer extends BaseAnalyzer {
     } catch {
       return '';
     }
+  }
+
+  /**
+   * Detect malicious behaviors on the page
+   */
+  private async detectMaliciousBehaviors(url: string): Promise<{
+    automaticDownload: boolean;
+    downloadUrl?: string;
+    fileName?: string;
+    scriptExecution: boolean;
+    scriptPatterns?: string[];
+    installationPrompt: boolean;
+    promptText?: string;
+    suspiciousJavaScript: boolean;
+    jsPatterns?: string[];
+  }> {
+    const browser = await this.getBrowser();
+    const context = await browser.newContext({
+      userAgent:
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    });
+    const page = await context.newPage();
+
+    const result: {
+      automaticDownload: boolean;
+      downloadUrl?: string;
+      fileName?: string;
+      scriptExecution: boolean;
+      scriptPatterns?: string[];
+      installationPrompt: boolean;
+      promptText?: string;
+      suspiciousJavaScript: boolean;
+      jsPatterns?: string[];
+    } = {
+      automaticDownload: false,
+      scriptExecution: false,
+      installationPrompt: false,
+      suspiciousJavaScript: false,
+    };
+
+    try {
+      // Navigate to URL
+      await page.goto(url, {
+        waitUntil: 'domcontentloaded',
+        timeout: NAVIGATION_TIMEOUT,
+      });
+
+      // 1. Check for automatic downloads
+      const downloadAttempted = await page.evaluate(() => {
+        // Check for download-triggering elements
+        const downloadLinks = document.querySelectorAll('a[download]');
+        if (downloadLinks.length > 0) {
+          return {
+            detected: true,
+            url: (downloadLinks[0] as HTMLAnchorElement).href,
+            fileName: (downloadLinks[0] as HTMLAnchorElement).download,
+          };
+        }
+
+        // Check for iframe downloads
+        const iframes = document.querySelectorAll('iframe[src*="download"]');
+        if (iframes.length > 0) {
+          return {
+            detected: true,
+            url: (iframes[0] as HTMLIFrameElement).src,
+          };
+        }
+
+        return { detected: false };
+      });
+
+      if (downloadAttempted.detected) {
+        result.automaticDownload = true;
+        result.downloadUrl = downloadAttempted.url;
+        result.fileName = downloadAttempted.fileName;
+      }
+
+      // 2. Check for script execution patterns
+      const scriptPatterns = await page.evaluate(() => {
+        const patterns: string[] = [];
+        const scripts = Array.from(document.scripts);
+
+        scripts.forEach((script) => {
+          const content = script.textContent || '';
+
+          // Check for eval() usage (code injection)
+          if (content.includes('eval(')) patterns.push('eval_detected');
+
+          // Check for document.write() (DOM manipulation)
+          if (content.includes('document.write')) patterns.push('document_write');
+
+          // Check for automatic execution
+          if (
+            content.includes('window.onload') ||
+            content.includes('DOMContentLoaded')
+          ) {
+            patterns.push('auto_execution');
+          }
+        });
+
+        return patterns;
+      });
+
+      if (scriptPatterns.length > 0) {
+        result.scriptExecution = true;
+        result.scriptPatterns = scriptPatterns;
+      }
+
+      // 3. Check for installation prompts
+      const installPrompt = await page.evaluate(() => {
+        const bodyText = document.body.textContent || '';
+        const installKeywords = [
+          'install now',
+          'download and install',
+          'setup.exe',
+          'install plugin',
+          'install extension',
+          'install software',
+        ];
+
+        for (const keyword of installKeywords) {
+          if (bodyText.toLowerCase().includes(keyword)) {
+            return { detected: true, text: keyword };
+          }
+        }
+        return { detected: false };
+      });
+
+      if (installPrompt.detected) {
+        result.installationPrompt = true;
+        result.promptText = installPrompt.text;
+      }
+
+      // 4. Check for suspicious JavaScript (file system, memory access)
+      const suspiciousJS = await page.evaluate(() => {
+        const patterns: string[] = [];
+        const scripts = Array.from(document.scripts);
+
+        scripts.forEach((script) => {
+          const content = script.textContent || '';
+
+          // File system access attempts
+          if (content.includes('FileReader') || content.includes('FileSystem')) {
+            patterns.push('file_system_access');
+          }
+
+          // Local storage manipulation
+          if (content.includes('localStorage') && content.includes('setItem')) {
+            patterns.push('local_storage_manipulation');
+          }
+
+          // Buffer/memory manipulation
+          if (content.includes('ArrayBuffer') || content.includes('SharedArrayBuffer')) {
+            patterns.push('memory_manipulation');
+          }
+
+          // WebAssembly (can be used for obfuscation)
+          if (content.includes('WebAssembly')) {
+            patterns.push('webassembly_detected');
+          }
+        });
+
+        return patterns;
+      });
+
+      if (suspiciousJS.length > 0) {
+        result.suspiciousJavaScript = true;
+        result.jsPatterns = suspiciousJS;
+      }
+    } catch (error) {
+      logger.warn({
+        msg: 'Failed to detect malicious behaviors',
+        url,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      await page.close();
+      await context.close();
+    }
+
+    return result;
   }
 
   /**

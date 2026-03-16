@@ -13,6 +13,19 @@ const UpdateIntegrationSchema = z.object({
   fallbackToNative: z.boolean().optional(),
 });
 
+// Validation schema for adding analyzer to integration
+const AddAnalyzerSchema = z.object({
+  analyzerName: z.string().min(1),
+  executionOrder: z.number().int().optional(),
+  analyzerOptions: z.record(z.any()).optional(),
+});
+
+// Validation schema for updating analyzer options
+const UpdateAnalyzerOptionsSchema = z.object({
+  analyzerOptions: z.record(z.any()),
+  executionOrder: z.number().int().optional(),
+});
+
 /**
  * GET /api/admin/integration-tasks
  * Get all integration tasks with their analyzers
@@ -46,15 +59,15 @@ export async function getAllIntegrationTasks(
       integrationsResult.rows.map(async (integration) => {
         const analyzersResult = await query(`
           SELECT
-            tc.task_name as "taskName",
-            tc.display_name as "displayName",
-            tc.description,
-            tc.analyzer_group as "analyzerGroup",
-            tc.is_active as "isActive",
+            a.analyzer_name as "taskName",
+            a.display_name as "displayName",
+            a.description,
+            a.analyzer_type as "analyzerGroup",
+            a.is_active as "isActive",
             ia.execution_order as "executionOrder"
           FROM integration_analyzers ia
-          JOIN task_configs tc ON ia.analyzer_name = tc.task_name
-          WHERE ia.integration_name = $1 AND tc.deleted_at IS NULL
+          JOIN analyzers a ON ia.analyzer_name = a.analyzer_name
+          WHERE ia.integration_name = $1
           ORDER BY ia.execution_order ASC
         `, [integration.integrationName]);
 
@@ -117,15 +130,15 @@ export async function getIntegrationTask(
     // Get analyzers for this integration
     const analyzersResult = await query(`
       SELECT
-        tc.task_name as "taskName",
-        tc.display_name as "displayName",
-        tc.description,
-        tc.analyzer_group as "analyzerGroup",
-        tc.is_active as "isActive",
+        a.analyzer_name as "taskName",
+        a.display_name as "displayName",
+        a.description,
+        a.analyzer_type as "analyzerGroup",
+        a.is_active as "isActive",
         ia.execution_order as "executionOrder"
       FROM integration_analyzers ia
-      JOIN task_configs tc ON ia.analyzer_name = tc.task_name
-      WHERE ia.integration_name = $1 AND tc.deleted_at IS NULL
+      JOIN analyzers a ON ia.analyzer_name = a.analyzer_name
+      WHERE ia.integration_name = $1
       ORDER BY ia.execution_order ASC
     `, [integrationName]);
 
@@ -240,6 +253,313 @@ export async function updateIntegrationTask(
     reply.status(500).send({
       success: false,
       error: 'Failed to update integration task',
+    });
+  }
+}
+
+/**
+ * GET /api/admin/integration-tasks/:integrationName/analyzers
+ * Get all analyzers configured for an integration
+ */
+export async function getIntegrationAnalyzers(
+  request: FastifyRequest<{ Params: { integrationName: string } }>,
+  reply: FastifyReply
+): Promise<void> {
+  try {
+    const { integrationName } = request.params;
+
+    // Verify integration exists
+    const integrationResult = await query(
+      'SELECT 1 FROM integration_tasks WHERE integration_name = $1 AND deleted_at IS NULL',
+      [integrationName]
+    );
+
+    if (integrationResult.rows.length === 0) {
+      reply.status(404).send({
+        success: false,
+        error: 'Integration not found',
+      });
+      return;
+    }
+
+    // Get analyzers with their options and task information
+    const analyzersResult = await query(`
+      SELECT
+        ia.analyzer_name as "analyzerName",
+        ia.execution_order as "executionOrder",
+        ia.analyzer_options as "analyzerOptions",
+        a.display_name as "displayName",
+        a.description,
+        a.analyzer_type as "analyzerType",
+        a.is_active as "isActive",
+        ta.task_name as "taskName",
+        ta.is_long_running as "isLongRunning",
+        ta.estimated_duration_ms as "estimatedDurationMs",
+        t.display_name as "taskDisplayName",
+        t.description as "taskDescription"
+      FROM integration_analyzers ia
+      LEFT JOIN analyzers a ON ia.analyzer_name = a.analyzer_name
+      LEFT JOIN task_analyzers ta ON ia.analyzer_name = ta.analyzer_name
+      LEFT JOIN tasks t ON ta.task_name = t.task_name
+      WHERE ia.integration_name = $1
+      ORDER BY ta.execution_order ASC, ia.execution_order ASC, ia.analyzer_name ASC
+    `, [integrationName]);
+
+    reply.send({
+      success: true,
+      data: {
+        integrationName,
+        analyzers: analyzersResult.rows,
+        count: analyzersResult.rows.length,
+      },
+    });
+  } catch (err) {
+    logger.error({ err }, 'Failed to get integration analyzers');
+    reply.status(500).send({
+      success: false,
+      error: 'Failed to get integration analyzers',
+    });
+  }
+}
+
+/**
+ * POST /api/admin/integration-tasks/:integrationName/analyzers
+ * Add analyzer to integration
+ */
+export async function addIntegrationAnalyzer(
+  request: FastifyRequest<{ Params: { integrationName: string }; Body: unknown }>,
+  reply: FastifyReply
+): Promise<void> {
+  try {
+    const { integrationName } = request.params;
+    const body = AddAnalyzerSchema.parse(request.body);
+
+    // Verify integration exists
+    const integrationResult = await query(
+      'SELECT 1 FROM integration_tasks WHERE integration_name = $1 AND deleted_at IS NULL',
+      [integrationName]
+    );
+
+    if (integrationResult.rows.length === 0) {
+      reply.status(404).send({
+        success: false,
+        error: 'Integration not found',
+      });
+      return;
+    }
+
+    // Verify analyzer exists
+    const analyzerResult = await query(
+      'SELECT 1 FROM analyzers WHERE analyzer_name = $1',
+      [body.analyzerName]
+    );
+
+    if (analyzerResult.rows.length === 0) {
+      reply.status(404).send({
+        success: false,
+        error: 'Analyzer not found',
+      });
+      return;
+    }
+
+    // Check if analyzer already added
+    const existsResult = await query(
+      'SELECT 1 FROM integration_analyzers WHERE integration_name = $1 AND analyzer_name = $2',
+      [integrationName, body.analyzerName]
+    );
+
+    if (existsResult.rows.length > 0) {
+      reply.status(409).send({
+        success: false,
+        error: 'Analyzer already added to this integration',
+      });
+      return;
+    }
+
+    // Add analyzer to integration
+    const result = await query(`
+      INSERT INTO integration_analyzers (integration_name, analyzer_name, execution_order, analyzer_options)
+      VALUES ($1, $2, $3, $4)
+      RETURNING
+        analyzer_name as "analyzerName",
+        execution_order as "executionOrder",
+        analyzer_options as "analyzerOptions"
+    `, [
+      integrationName,
+      body.analyzerName,
+      body.executionOrder ?? 0,
+      JSON.stringify(body.analyzerOptions || {}),
+    ]);
+
+    logger.info({
+      integrationName,
+      analyzerName: body.analyzerName,
+      userId: request.user?.userId,
+    }, 'Analyzer added to integration');
+
+    reply.status(201).send({
+      success: true,
+      message: 'Analyzer added successfully',
+      data: result.rows[0],
+    });
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      reply.status(400).send({
+        success: false,
+        error: 'Invalid request body',
+        details: err.errors,
+      });
+      return;
+    }
+
+    logger.error({ err }, 'Failed to add analyzer to integration');
+    reply.status(500).send({
+      success: false,
+      error: 'Failed to add analyzer',
+    });
+  }
+}
+
+/**
+ * PUT /api/admin/integration-tasks/:integrationName/analyzers/:analyzerName
+ * Update analyzer options for integration
+ */
+export async function updateIntegrationAnalyzer(
+  request: FastifyRequest<{ Params: { integrationName: string; analyzerName: string }; Body: unknown }>,
+  reply: FastifyReply
+): Promise<void> {
+  try {
+    const { integrationName, analyzerName } = request.params;
+    const body = UpdateAnalyzerOptionsSchema.parse(request.body);
+
+    // Verify analyzer is assigned to integration
+    const existsResult = await query(
+      'SELECT 1 FROM integration_analyzers WHERE integration_name = $1 AND analyzer_name = $2',
+      [integrationName, analyzerName]
+    );
+
+    if (existsResult.rows.length === 0) {
+      reply.status(404).send({
+        success: false,
+        error: 'Analyzer not found for this integration',
+      });
+      return;
+    }
+
+    // Build dynamic update query
+    const setClauses: string[] = [];
+    const values: any[] = [];
+    let paramIndex = 1;
+
+    if (body.analyzerOptions !== undefined) {
+      setClauses.push(`analyzer_options = $${paramIndex}`);
+      values.push(JSON.stringify(body.analyzerOptions));
+      paramIndex++;
+    }
+
+    if (body.executionOrder !== undefined) {
+      setClauses.push(`execution_order = $${paramIndex}`);
+      values.push(body.executionOrder);
+      paramIndex++;
+    }
+
+    if (setClauses.length === 0) {
+      reply.status(400).send({
+        success: false,
+        error: 'No fields to update',
+      });
+      return;
+    }
+
+    values.push(integrationName);
+    values.push(analyzerName);
+
+    const result = await query(`
+      UPDATE integration_analyzers
+      SET ${setClauses.join(', ')}
+      WHERE integration_name = $${paramIndex} AND analyzer_name = $${paramIndex + 1}
+      RETURNING
+        analyzer_name as "analyzerName",
+        execution_order as "executionOrder",
+        analyzer_options as "analyzerOptions"
+    `, values);
+
+    logger.info({
+      integrationName,
+      analyzerName,
+      updates: body,
+      userId: request.user?.userId,
+    }, 'Integration analyzer updated');
+
+    reply.send({
+      success: true,
+      message: 'Analyzer options updated successfully',
+      data: result.rows[0],
+    });
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      reply.status(400).send({
+        success: false,
+        error: 'Invalid request body',
+        details: err.errors,
+      });
+      return;
+    }
+
+    logger.error({ err }, 'Failed to update integration analyzer');
+    reply.status(500).send({
+      success: false,
+      error: 'Failed to update analyzer options',
+    });
+  }
+}
+
+/**
+ * DELETE /api/admin/integration-tasks/:integrationName/analyzers/:analyzerName
+ * Remove analyzer from integration
+ */
+export async function deleteIntegrationAnalyzer(
+  request: FastifyRequest<{ Params: { integrationName: string; analyzerName: string } }>,
+  reply: FastifyReply
+): Promise<void> {
+  try {
+    const { integrationName, analyzerName } = request.params;
+
+    // Verify analyzer is assigned to integration
+    const existsResult = await query(
+      'SELECT 1 FROM integration_analyzers WHERE integration_name = $1 AND analyzer_name = $2',
+      [integrationName, analyzerName]
+    );
+
+    if (existsResult.rows.length === 0) {
+      reply.status(404).send({
+        success: false,
+        error: 'Analyzer not found for this integration',
+      });
+      return;
+    }
+
+    // Remove analyzer from integration
+    await query(
+      'DELETE FROM integration_analyzers WHERE integration_name = $1 AND analyzer_name = $2',
+      [integrationName, analyzerName]
+    );
+
+    logger.info({
+      integrationName,
+      analyzerName,
+      userId: request.user?.userId,
+    }, 'Analyzer removed from integration');
+
+    reply.send({
+      success: true,
+      message: 'Analyzer removed successfully',
+    });
+  } catch (err) {
+    logger.error({ err }, 'Failed to remove analyzer from integration');
+    reply.status(500).send({
+      success: false,
+      error: 'Failed to remove analyzer',
     });
   }
 }

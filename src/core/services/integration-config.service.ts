@@ -16,6 +16,14 @@ import { query } from '../../infrastructure/database/client.js';
 const logger = getLogger();
 
 /**
+ * Analyzer-specific options
+ */
+export interface AnalyzerOptions {
+  analyzerName: string;
+  options: Record<string, any>;
+}
+
+/**
  * Integration execution configuration
  */
 export interface IntegrationConfig {
@@ -30,6 +38,7 @@ export interface IntegrationConfig {
   aiTimeout?: number;
   fallbackToNative?: boolean;
   isActive: boolean;
+  analyzers: AnalyzerOptions[]; // NEW: Analyzer-specific options
 }
 
 /**
@@ -81,12 +90,20 @@ export class IntegrationConfigService {
         it.execution_mode,
         it.ai_model_id,
         it.fallback_to_native,
-        it.is_active,
+        it.enabled,
         am.provider as ai_provider,
-        am.model as ai_model,
+        am.model_id as ai_model,
         am.temperature as ai_temperature,
         am.max_tokens as ai_max_tokens,
-        am.timeout_ms as ai_timeout
+        am.timeout_ms as ai_timeout,
+        (
+          SELECT json_agg(json_build_object(
+            'analyzerName', ia.analyzer_name,
+            'options', ia.analyzer_options
+          ))
+          FROM integration_analyzers ia
+          WHERE ia.integration_name = i.name
+        ) as analyzers
       FROM integration_tasks it
       INNER JOIN integrations i ON it.integration_id = i.id
       LEFT JOIN ai_model_configs am ON it.ai_model_id = am.id
@@ -119,7 +136,8 @@ export class IntegrationConfigService {
       aiMaxTokens: row.ai_max_tokens,
       aiTimeout: row.ai_timeout,
       fallbackToNative: row.fallback_to_native !== false,
-      isActive: row.is_active !== false,
+      isActive: row.enabled !== false,
+      analyzers: row.analyzers || [],
     };
 
     logger.debug({
@@ -127,6 +145,7 @@ export class IntegrationConfigService {
       integrationName,
       executionMode: config.executionMode,
       hasAI: !!config.aiModelId,
+      analyzersConfigured: config.analyzers.length,
     });
 
     return config;
@@ -188,16 +207,16 @@ export class IntegrationConfigService {
         it.execution_mode,
         it.ai_model_id,
         it.fallback_to_native,
-        it.is_active,
+        it.enabled,
         am.provider as ai_provider,
-        am.model as ai_model,
+        am.model_id as ai_model,
         am.temperature as ai_temperature,
         am.max_tokens as ai_max_tokens,
         am.timeout_ms as ai_timeout
       FROM integration_tasks it
       INNER JOIN integrations i ON it.integration_id = i.id
       LEFT JOIN ai_model_configs am ON it.ai_model_id = am.id
-      WHERE it.is_active = true
+      WHERE it.enabled = true
         AND it.deleted_at IS NULL
         AND i.deleted_at IS NULL
       ORDER BY i.name
@@ -216,7 +235,7 @@ export class IntegrationConfigService {
       aiMaxTokens: row.ai_max_tokens,
       aiTimeout: row.ai_timeout,
       fallbackToNative: row.fallback_to_native !== false,
-      isActive: row.is_active !== false,
+      isActive: row.enabled !== false,
     }));
   }
 }

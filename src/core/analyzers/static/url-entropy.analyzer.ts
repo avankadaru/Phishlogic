@@ -27,7 +27,7 @@ export class UrlEntropyAnalyzer extends BaseAnalyzer {
   }
 
   getWeight(): number {
-    return 1.0;
+    return this.config.analysis.analyzerWeights.urlEntropy; // Configurable from env (default: 1.2)
   }
 
   getType(): 'static' | 'dynamic' {

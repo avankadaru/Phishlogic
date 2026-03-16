@@ -11,12 +11,18 @@ import {
   UrlEntropyAnalyzer,
   SpfAnalyzer,
   DkimAnalyzer,
-  HeaderAnalyzer,
 } from '../../core/analyzers/static/index.js';
 import {
   RedirectAnalyzer,
   FormAnalyzer,
 } from '../../core/analyzers/dynamic/index.js';
+import { SenderReputationAnalyzer } from '../../core/analyzers/reputation/sender-reputation.analyzer.js';
+import { LinkReputationAnalyzer } from '../../core/analyzers/reputation/link-reputation.analyzer.js';
+import { ContentAnalysisAnalyzer } from '../../core/analyzers/ml/content-analysis.analyzer.js';
+import { AttachmentAnalyzer } from '../../core/analyzers/attachment/attachment.analyzer.js';
+import { ButtonAnalyzer } from '../../core/analyzers/content/button.analyzer.js';
+import { ImageAnalyzer } from '../../core/analyzers/image/image.analyzer.js';
+import { QRCodeAnalyzer } from '../../core/analyzers/image/qrcode.analyzer.js';
 import { getLogger } from '../../infrastructure/logging/index.js';
 
 const logger = getLogger();
@@ -28,7 +34,18 @@ const staticAnalyzers = [
   new UrlEntropyAnalyzer(),
   new SpfAnalyzer(),
   new DkimAnalyzer(),
-  new HeaderAnalyzer(),
+  // DEPRECATED: Keyword-based analyzers (replaced by systematic ML/NLP)
+  // new HeaderAnalyzer(), // Replaced by ContentAnalysisAnalyzer (Phase 4)
+  // new EmotionalManipulationAnalyzer(), // Replaced by ContentAnalysisAnalyzer (Phase 4)
+  // NEW: Systematic verification analyzers
+  new SenderReputationAnalyzer(), // Phase 1: Systematic sender validation
+  new LinkReputationAnalyzer(), // Phase 2: Threat intelligence URL checking
+  new AttachmentAnalyzer(), // Phase 3: File type analysis (ClamAV/YARA when available)
+  new ContentAnalysisAnalyzer(), // Phase 4: ML/NLP content analysis (NO keywords)
+  // Phase 5: Task-based architecture - new analyzers
+  new ButtonAnalyzer(), // Button/CTA tracking (hidden redirects, text mismatches)
+  new ImageAnalyzer(), // Image analysis (OCR, EXIF, phishing text detection)
+  new QRCodeAnalyzer(), // QR code decoding and URL validation
 ];
 
 const dynamicAnalyzers = [

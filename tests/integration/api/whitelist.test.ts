@@ -18,9 +18,9 @@ describe('Whitelist API', () => {
     await server.close();
   });
 
-  beforeEach(() => {
+  beforeEach(async () => {
     // Clear whitelist before each test
-    whitelistService.clear();
+    await whitelistService.clear();
   });
 
   describe('GET /api/v1/whitelist', () => {
@@ -38,7 +38,7 @@ describe('Whitelist API', () => {
     });
 
     it('should return added entries', async () => {
-      whitelistService.addEntry({
+      await whitelistService.addEntry({
         type: 'email',
         value: 'test@example.com',
       });
@@ -113,7 +113,7 @@ describe('Whitelist API', () => {
 
   describe('GET /api/v1/whitelist/:id', () => {
     it('should get whitelist entry by ID', async () => {
-      const entry = whitelistService.addEntry({
+      const entry = await whitelistService.addEntry({
         type: 'email',
         value: 'test@example.com',
       });
@@ -141,7 +141,7 @@ describe('Whitelist API', () => {
 
   describe('DELETE /api/v1/whitelist/:id', () => {
     it('should delete whitelist entry', async () => {
-      const entry = whitelistService.addEntry({
+      const entry = await whitelistService.addEntry({
         type: 'email',
         value: 'test@example.com',
       });

@@ -22,7 +22,7 @@ export class DkimAnalyzer extends BaseAnalyzer {
   }
 
   getWeight(): number {
-    return 1.5;
+    return this.config.analysis.analyzerWeights.dkim; // Configurable from env (default: 1.4)
   }
 
   getType(): 'static' | 'dynamic' {

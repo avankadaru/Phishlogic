@@ -22,7 +22,7 @@ export class SpfAnalyzer extends BaseAnalyzer {
   }
 
   getWeight(): number {
-    return 1.5;
+    return this.config.analysis.analyzerWeights.spf; // Configurable from env (default: 1.4)
   }
 
   getType(): 'static' | 'dynamic' {

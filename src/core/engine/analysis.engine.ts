@@ -16,6 +16,7 @@ import { getWhitelistService } from '../services/whitelist.service.js';
 import { getLogger } from '../../infrastructure/logging/index.js';
 import { getEmailService } from '../../infrastructure/email/index.js';
 import { getConfig } from '../../config/index.js';
+import { ContentRiskAnalyzer } from '../analyzers/risk/content-risk.analyzer.js';
 import {
   getAnalysisPersistenceService,
   type AnalysisResult as PersistenceAnalysisResult,
@@ -29,6 +30,7 @@ import {
 import { NativeExecutionStrategy } from '../execution/strategies/native.strategy.js';
 import { HybridExecutionStrategy } from '../execution/strategies/hybrid.strategy.js';
 import { AIExecutionStrategy } from '../execution/strategies/ai.strategy.js';
+import { TaskBasedExecutionStrategy } from '../execution/strategies/task-based.strategy.js';
 
 const logger = getLogger();
 
@@ -106,7 +108,7 @@ export class AnalysisEngine {
     let aiMetadata: any = undefined;
 
     try {
-      // Step 1: Check whitelist (early exit for trusted sources)
+      // Step 1: Check whitelist and analyze content risk (content-aware bypass)
       this.addExecutionStep(executionSteps, 'whitelist_check_started');
 
       const whitelistResult = await this.whitelistService.check(input);
@@ -114,48 +116,104 @@ export class AnalysisEngine {
       this.completeExecutionStep(executionSteps, 'whitelist_check_started', {
         isWhitelisted: whitelistResult.isWhitelisted,
         matchReason: whitelistResult.matchReason,
+        trustLevel: whitelistResult.trustLevel,
       });
 
+      let trustLevel = whitelistResult.trustLevel;
+      let riskProfile = undefined;
+
       if (whitelistResult.isWhitelisted) {
-        logger.info({
-          msg: 'Input whitelisted - bypassing analysis',
-          analysisId,
-          matchReason: whitelistResult.matchReason,
+        const config = getConfig();
+
+        // Step 1a: Analyze content risk indicators (fast pre-check)
+        this.addExecutionStep(executionSteps, 'content_risk_analysis_started');
+
+        const contentRiskAnalyzer = new ContentRiskAnalyzer();
+        riskProfile = await contentRiskAnalyzer.analyzeRisk(input);
+
+        this.completeExecutionStep(executionSteps, 'content_risk_analysis_started', {
+          riskScore: riskProfile.overallRiskScore,
+          hasLinks: riskProfile.hasLinks,
+          hasAttachments: riskProfile.hasAttachments,
+          hasUrgency: riskProfile.hasUrgencyLanguage,
         });
 
-        // Return safe verdict immediately
-        const duration = Date.now() - backendStartTime;
-
-        this.addExecutionStep(executionSteps, 'response_sent', {
-          verdict: 'Safe',
-          whitelisted: true,
-        });
-
-        result = {
-          verdict: 'Safe',
-          confidence: 0.0,
-          score: 0.0,
-          alertLevel: 'none',
-          redFlags: [],
-          reasoning: `This is from a trusted source${whitelistResult.matchReason ? ` (${whitelistResult.matchReason})` : ''}.`,
-          signals: [],
-          metadata: {
-            duration,
-            timestamp: new Date(),
-            analyzersRun: [],
+        // Step 1b: Conditional bypass decision based on trust level + content risk
+        if (trustLevel === 'high' && riskProfile.overallRiskScore === 0) {
+          // HIGH trust + NO risk indicators = FULL BYPASS
+          logger.info({
+            msg: 'HIGH trust with no risk indicators - full bypass',
             analysisId,
-            executionSteps,
-          },
-        };
+            trustLevel: 'high',
+            riskScore: 0,
+            matchReason: whitelistResult.matchReason,
+          });
 
-        // Update persistence tracking with result
-        persistenceService.updateResult(analysisId, this.mapToPersistenceResult(result));
+          const duration = Date.now() - backendStartTime;
 
-        return result;
+          this.addExecutionStep(executionSteps, 'response_sent', {
+            verdict: 'Safe',
+            whitelisted: true,
+            trustLevel: 'high',
+            bypassType: 'full',
+          });
+
+          result = {
+            verdict: 'Safe',
+            confidence: 1.0,
+            score: 0.0,
+            alertLevel: 'none',
+            redFlags: [],
+            reasoning: `Trusted source with no risk indicators (no links, no attachments, no urgency language). ${whitelistResult.matchReason ? `Match: ${whitelistResult.matchReason}` : ''}`,
+            signals: [],
+            metadata: {
+              duration,
+              timestamp: new Date(),
+              analyzersRun: [],
+              analysisId,
+              executionSteps,
+              trustLevel: 'high',
+              riskScore: 0,
+              bypassType: 'full',
+            },
+          };
+
+          // Update persistence tracking with result
+          persistenceService.updateResult(analysisId, this.mapToPersistenceResult(result));
+
+          return result;
+        }
+
+        // HIGH/MEDIUM/LOW trust with risk indicators = SELECTIVE ANALYSIS
+        // Log decision for audit trail
+        if (config.whitelist.trustLevelLogging) {
+          logger.info({
+            msg: 'Trusted sender with risk indicators - running selective analysis',
+            analysisId,
+            trustLevel,
+            riskScore: riskProfile.overallRiskScore,
+            hasLinks: riskProfile.hasLinks,
+            hasAttachments: riskProfile.hasAttachments,
+            hasUrgency: riskProfile.hasUrgencyLanguage,
+            matchReason: whitelistResult.matchReason,
+          });
+        }
+
+        // Continue to execution with trustLevel + riskProfile
+        // The strategy will filter analyzers based on these factors
       }
 
       // Step 2: Load integration config and prepare execution context
       this.addExecutionStep(executionSteps, 'config_loading_started');
+
+      // Transform analyzer options array to keyed map for easy lookup
+      const analyzerOptions = integrationConfig?.analyzers?.reduce<Record<string, Record<string, any>>>(
+        (acc, analyzerOpt) => {
+          acc[analyzerOpt.analyzerName] = analyzerOpt.options;
+          return acc;
+        },
+        {}
+      );
 
       const context: ExecutionContext = {
         analysisId,
@@ -174,6 +232,9 @@ export class AnalysisEngine {
               fallbackToNative: integrationConfig.fallbackToNative,
             }
           : undefined,
+        trustLevel,
+        riskProfile,
+        analyzerOptions,
       };
 
       this.completeExecutionStep(executionSteps, 'config_loading_started', {
@@ -196,6 +257,20 @@ export class AnalysisEngine {
 
       aiMetadata = executionResult.aiMetadata;
       result = executionResult.result;
+
+      // Add trust level and content risk to result metadata
+      if (trustLevel) {
+        result.metadata.trustLevel = trustLevel;
+      }
+      if (riskProfile) {
+        result.metadata.contentRisk = {
+          hasLinks: riskProfile.hasLinks,
+          hasAttachments: riskProfile.hasAttachments,
+          hasUrgencyLanguage: riskProfile.hasUrgencyLanguage,
+          overallRiskScore: riskProfile.overallRiskScore,
+        };
+        result.metadata.riskScore = riskProfile.overallRiskScore;
+      }
 
       this.completeExecutionStep(executionSteps, 'strategy_execution_started', {
         verdict: result.verdict,

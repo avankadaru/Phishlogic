@@ -25,9 +25,9 @@ export function initDatabase(): Pool {
   // Set PGSSLMODE environment variable to disable SSL if not configured
   // This ensures pg library respects the SSL setting
   if (!config.database.ssl) {
-    process.env.PGSSLMODE = 'disable';
+    process.env['PGSSLMODE'] = 'disable';
   } else {
-    process.env.PGSSLMODE = 'prefer';
+    process.env['PGSSLMODE'] = 'prefer';
   }
 
   const poolConfig: PoolConfig = {
@@ -62,7 +62,7 @@ export function initDatabase(): Pool {
     database: config.database.name,
     poolSize: config.database.poolSize,
     ssl: poolConfig.ssl,
-    sslMode: process.env.PGSSLMODE,
+    sslMode: process.env['PGSSLMODE'],
   }, 'Database connection pool initialized');
 
   return pool;
@@ -76,6 +76,13 @@ export function getDatabase(): Pool {
     return initDatabase();
   }
   return pool;
+}
+
+/**
+ * Alias for getDatabase() - for backward compatibility
+ */
+export function getDatabaseClient(): Pool {
+  return getDatabase();
 }
 
 /**

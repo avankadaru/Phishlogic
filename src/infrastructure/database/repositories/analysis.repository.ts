@@ -210,7 +210,7 @@ export class AnalysisRepository extends BaseRepository<
     // Get total count
     const countSql = `SELECT COUNT(*) as count FROM ${this.tableName} ${whereClause}`;
     const countResult = await this.executeQuery<{ count: string }>(countSql, values);
-    const total = parseInt(countResult.rows[0].count, 10);
+    const total = parseInt(countResult.rows[0]?.count || '0', 10);
 
     return {
       analyses: analysesResult.rows.map((row) => this.mapToDomain(row)),
@@ -394,7 +394,7 @@ export class AnalysisRepository extends BaseRepository<
 
   /**
    * Map domain model to database row
-   * Handles JSONB stringification and column name mapping
+   * Column name mapping only - JSONB serialization handled by BaseRepository
    */
   protected mapToDatabase(
     domain: Partial<AnalysisDomainModel>
@@ -404,7 +404,10 @@ export class AnalysisRepository extends BaseRepository<
     if (domain.id) dbModel.id = domain.id;
     if (domain.tenantId !== undefined) dbModel.tenant_id = domain.tenantId;
     if (domain.inputType) dbModel.input_type = domain.inputType;
-    if (domain.inputData) dbModel.input_data = domain.inputData;
+    if (domain.inputData) {
+      // BaseRepository automatically handles JSONB serialization via Type Converter Pattern
+      dbModel.input_data = domain.inputData;
+    }
 
     // Generate input_hash if inputData is provided
     if (domain.inputData) {
@@ -419,11 +422,20 @@ export class AnalysisRepository extends BaseRepository<
     if (domain.confidence !== undefined) dbModel.confidence = domain.confidence;
     if (domain.score !== undefined) dbModel.score = domain.score;
     if (domain.alertLevel) dbModel.alert_level = domain.alertLevel;
-    if (domain.redFlags) dbModel.red_flags = domain.redFlags;
+    if (domain.redFlags) {
+      // BaseRepository automatically handles JSONB serialization
+      dbModel.red_flags = domain.redFlags;
+    }
     if (domain.reasoning !== undefined) dbModel.reasoning = domain.reasoning || null;
-    if (domain.signals) dbModel.signals = domain.signals;
+    if (domain.signals) {
+      // BaseRepository automatically handles JSONB serialization
+      dbModel.signals = domain.signals;
+    }
     if (domain.analyzersRun) dbModel.analyzers_run = domain.analyzersRun;
-    if (domain.executionSteps) dbModel.execution_steps = domain.executionSteps;
+    if (domain.executionSteps) {
+      // BaseRepository automatically handles JSONB serialization
+      dbModel.execution_steps = domain.executionSteps;
+    }
     if (domain.durationMs !== undefined) dbModel.duration_ms = domain.durationMs;
 
     // AI cost tracking (extracted from JSONB for quick access)
@@ -442,10 +454,16 @@ export class AnalysisRepository extends BaseRepository<
       dbModel.execution_mode = domain.executionMode || null;
     if (domain.inputSource !== undefined) dbModel.input_source = domain.inputSource || null;
 
-    // JSONB columns - pg driver handles object-to-JSONB conversion automatically
-    if (domain.aiMetadata !== undefined) dbModel.ai_metadata = domain.aiMetadata;
-    if (domain.timingMetadata !== undefined) dbModel.timing_metadata = domain.timingMetadata;
-    if (domain.errorDetails !== undefined) dbModel.error_details = domain.errorDetails;
+    // JSONB columns - BaseRepository automatically handles serialization
+    if (domain.aiMetadata !== undefined) {
+      dbModel.ai_metadata = domain.aiMetadata;
+    }
+    if (domain.timingMetadata !== undefined) {
+      dbModel.timing_metadata = domain.timingMetadata;
+    }
+    if (domain.errorDetails !== undefined) {
+      dbModel.error_details = domain.errorDetails;
+    }
 
     if (domain.whitelisted !== undefined) dbModel.whitelisted = domain.whitelisted;
     if (domain.whitelistReason !== undefined)
