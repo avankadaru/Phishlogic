@@ -16,6 +16,7 @@ interface AnalysisResult {
   verdict: 'Safe' | 'Suspicious' | 'Malicious';
   confidence: number;
   redFlags: string[];
+  actionItems: string[];
   executionMode: string;
   aiProvider?: string;
   processingTimeMs: number;
@@ -63,12 +64,13 @@ export default function EmailTestPage() {
       });
 
       setResult({
-        verdict: response.data.data?.verdict || 'Safe',
-        confidence: response.data.data?.confidence || 0,
-        redFlags: response.data.data?.redFlags || [],
-        executionMode: response.data.data?.executionMode || executionMode,
-        aiProvider: response.data.data?.aiProvider,
-        processingTimeMs: response.data.data?.processingTimeMs || 0,
+        verdict: response.data.verdict || 'Safe',
+        confidence: response.data.confidence || 0,
+        redFlags: response.data.redFlags?.map((flag: any) => flag.message) || [],
+        actionItems: response.data.actions || [],
+        executionMode: executionMode,
+        aiProvider: undefined,
+        processingTimeMs: response.data.metadata?.duration || 0,
         analysisId,
       });
     } catch (error: any) {

@@ -173,14 +173,15 @@ export interface AnalysisCostSummary {
 
 // Whitelist
 export type WhitelistType = 'email' | 'domain' | 'url';
-export type TrustLevel = 'high' | 'medium' | 'low';
 
 export interface WhitelistEntry {
   id: string;
   type: WhitelistType;
   value: string;
   description?: string;
-  trustLevel?: TrustLevel;
+  isTrusted: boolean;
+  scanAttachments: boolean;
+  scanRichContent: boolean;
   addedAt: string;
   expiresAt?: string;
   active: boolean;
@@ -224,6 +225,51 @@ export interface ExecutionStep {
   context?: Record<string, unknown>;
 }
 
+// Enriched threat pattern (matches backend ThreatMetadata)
+export interface EnrichedThreat {
+  patternId: string;
+  displayName: string;
+  riskLevel: 'critical' | 'high' | 'medium' | 'low' | 'benign';
+  explanation: string;
+  riskReason: string;
+  category: string;
+  detectedIn?: 'inline' | 'external' | 'runtime';
+  detail?: string;
+  timestamp?: number;
+}
+
+// Threat with count for deduplication in UI
+export interface ThreatWithCount extends EnrichedThreat {
+  count: number;
+}
+
+// Signal structure from backend
+export interface AnalysisSignal {
+  signalType: string;
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  confidence: number;
+  description: string;
+  evidence?: {
+    enrichedThreats?: {
+      inline: EnrichedThreat[];
+      external: Array<{ url: string; threats: EnrichedThreat[] }>;
+      runtime: EnrichedThreat[];
+      dom: EnrichedThreat[];
+      summary: {
+        criticalCount: number;
+        highCount: number;
+        mediumCount: number;
+        benignCount: number;
+      };
+    };
+    // Legacy fields for backward compatibility
+    inlinePatterns?: string[];
+    externalScripts?: Array<{ url: string; patterns: string[] }>;
+    runtimeEvents?: Array<{ type: string; detail: string; timestamp: number }>;
+    [key: string]: any;
+  };
+}
+
 export interface Analysis {
   id: string;
   inputType: string;
@@ -239,9 +285,10 @@ export interface Analysis {
   tokensUsed?: number;
   whitelisted: boolean;
   whitelistReason?: string;
-  trustLevel?: TrustLevel;
+  isTrusted?: boolean;
   analyzersRun?: string[];
   executionSteps?: ExecutionStep[];
+  signals?: AnalysisSignal[];
   contentRisk?: {
     hasLinks: boolean;
     hasAttachments: boolean;

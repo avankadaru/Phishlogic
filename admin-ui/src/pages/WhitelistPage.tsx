@@ -2,9 +2,8 @@ import { useEffect, useState } from 'react';
 import api from '@/lib/api';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
-import { Select } from '@/components/ui/Select';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
-import type { WhitelistEntry, WhitelistType, TrustLevel } from '@/types';
+import type { WhitelistEntry, WhitelistType } from '@/types';
 import { Shield, Plus, Trash2 } from 'lucide-react';
 
 export default function WhitelistPage() {
@@ -15,7 +14,9 @@ export default function WhitelistPage() {
     type: 'domain' as WhitelistType,
     value: '',
     description: '',
-    trustLevel: 'high' as TrustLevel,
+    isTrusted: true,
+    scanAttachments: true,
+    scanRichContent: true,
   });
 
   useEffect(() => {
@@ -38,7 +39,14 @@ export default function WhitelistPage() {
 
     try {
       await api.post('/admin/whitelist', newEntry);
-      setNewEntry({ type: 'domain', value: '', description: '', trustLevel: 'high' });
+      setNewEntry({
+        type: 'domain',
+        value: '',
+        description: '',
+        isTrusted: true,
+        scanAttachments: true,
+        scanRichContent: true,
+      });
       setShowAdd(false);
       await loadEntries();
     } catch (error) {
@@ -119,19 +127,45 @@ export default function WhitelistPage() {
                 onChange={(e) => setNewEntry({ ...newEntry, description: e.target.value })}
               />
             </div>
-            <div>
-              <label className="text-sm font-medium mb-2 block">Trust Level</label>
-              <Select
-                value={newEntry.trustLevel}
-                onChange={(e) => setNewEntry({ ...newEntry, trustLevel: e.target.value as TrustLevel })}
-              >
-                <option value="high">High - Bypass if no risk indicators</option>
-                <option value="medium">Medium - Always verify links/attachments</option>
-                <option value="low">Low - Full analysis (skip expensive checks)</option>
-              </Select>
-              <p className="text-xs text-muted-foreground mt-1">
-                Controls which analyzers run for this trusted source
-              </p>
+            <div className="space-y-3">
+              <label className="flex items-center space-x-3">
+                <input
+                  type="checkbox"
+                  checked={newEntry.isTrusted}
+                  onChange={(e) => setNewEntry({ ...newEntry, isTrusted: e.target.checked })}
+                  className="rounded border-gray-300 text-primary focus:ring-primary"
+                />
+                <div>
+                  <span className="text-sm font-medium">Is Trusted</span>
+                  <p className="text-xs text-muted-foreground">
+                    Skip authentication checks (SPF, DKIM, sender reputation)
+                  </p>
+                </div>
+              </label>
+
+              {newEntry.isTrusted && (
+                <>
+                  <label className="flex items-center space-x-3 ml-6">
+                    <input
+                      type="checkbox"
+                      checked={newEntry.scanAttachments}
+                      onChange={(e) => setNewEntry({ ...newEntry, scanAttachments: e.target.checked })}
+                      className="rounded border-gray-300 text-primary focus:ring-primary"
+                    />
+                    <span className="text-sm">Scan attachments when present</span>
+                  </label>
+
+                  <label className="flex items-center space-x-3 ml-6">
+                    <input
+                      type="checkbox"
+                      checked={newEntry.scanRichContent}
+                      onChange={(e) => setNewEntry({ ...newEntry, scanRichContent: e.target.checked })}
+                      className="rounded border-gray-300 text-primary focus:ring-primary"
+                    />
+                    <span className="text-sm">Scan links, images, and QR codes when present</span>
+                  </label>
+                </>
+              )}
             </div>
             <div className="flex space-x-2">
               <Button onClick={handleAdd}>Add Entry</Button>
@@ -161,18 +195,16 @@ export default function WhitelistPage() {
                   <div className="flex items-center space-x-4">
                     <Shield className="w-5 h-5 text-green-600" />
                     <div>
-                      <div className="flex items-center space-x-2">
+                      <div className="flex items-center space-x-2 flex-wrap gap-y-1">
                         <span className="font-medium">{entry.value}</span>
                         <span className="px-2 py-0.5 text-xs rounded-full bg-primary/10 text-primary">
                           {entry.type}
                         </span>
-                        {entry.trustLevel && (
-                          <span className={`px-2 py-0.5 text-xs rounded-full ${
-                            entry.trustLevel === 'high' ? 'bg-green-100 text-green-700' :
-                            entry.trustLevel === 'medium' ? 'bg-yellow-100 text-yellow-700' :
-                            'bg-orange-100 text-orange-700'
-                          }`}>
-                            {entry.trustLevel.toUpperCase()}
+                        {entry.isTrusted && (
+                          <span className="px-2 py-0.5 text-xs rounded-full bg-green-100 text-green-700 dark:bg-green-900/20 dark:text-green-400">
+                            Trusted
+                            {!entry.scanAttachments && ' (Skip Attachments)'}
+                            {!entry.scanRichContent && ' (Skip Rich Content)'}
                           </span>
                         )}
                       </div>

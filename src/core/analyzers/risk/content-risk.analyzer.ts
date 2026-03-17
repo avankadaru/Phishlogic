@@ -4,7 +4,7 @@
  * Used to determine conditional bypass strategy for trusted senders
  */
 
-import type { NormalizedInput } from '../../models/input.js';
+import type { NormalizedInput, UrlInput } from '../../models/input.js';
 import { isEmailInput } from '../../models/input.js';
 
 /**
@@ -21,11 +21,16 @@ export interface ContentRiskProfile {
   attachments: string[];
   hasSuspiciousAttachments: boolean; // Check extensions
 
+  hasImages: boolean;
+  imageCount: number;
+  hasQRCodes: boolean;
+  qrCodeCount?: number;
+
   hasUrgencyLanguage: boolean;
   urgencyScore: number; // 0-10 scale
   urgencyIndicators: string[]; // "act now", "24 hours", etc.
 
-  hasCredentialForms: boolean; // Requires browser check (placeholder)
+  hasForms: boolean; // Renamed from hasCredentialForms for clarity
 
   overallRiskScore: number; // 0-10 weighted score
 }
@@ -102,11 +107,16 @@ export class ContentRiskAnalyzer {
       attachments: [],
       hasSuspiciousAttachments: false,
 
+      hasImages: false,
+      imageCount: 0,
+      hasQRCodes: false,
+      qrCodeCount: 0,
+
       hasUrgencyLanguage: false,
       urgencyScore: 0,
       urgencyIndicators: [],
 
-      hasCredentialForms: false, // Placeholder (requires browser analysis)
+      hasForms: false,
 
       overallRiskScore: 0,
     };
@@ -125,6 +135,17 @@ export class ContentRiskAnalyzer {
       profile.attachmentCount = attachmentAnalysis.attachmentCount;
       profile.attachments = attachmentAnalysis.attachments;
       profile.hasSuspiciousAttachments = attachmentAnalysis.hasSuspiciousAttachments;
+
+      // Analyze images and QR codes (email only)
+      const imageAnalysis = this.analyzeImages(input);
+      profile.hasImages = imageAnalysis.hasImages;
+      profile.imageCount = imageAnalysis.imageCount;
+      profile.hasQRCodes = imageAnalysis.hasQRCodes;
+      profile.qrCodeCount = imageAnalysis.qrCodeCount;
+
+      // Analyze forms (email only)
+      const formAnalysis = this.analyzeForms(input);
+      profile.hasForms = formAnalysis.hasForms;
 
       // Analyze urgency language (email only)
       const urgencyAnalysis = this.analyzeUrgency(input);
@@ -155,14 +176,15 @@ export class ContentRiskAnalyzer {
       if (input.data.parsed.urls && input.data.parsed.urls.length > 0) {
         links = input.data.parsed.urls;
       } else {
-        // Fallback: extract from body/html
-        const text = input.data.parsed.text || input.data.parsed.html || '';
+        // Fallback: extract from body
+        const text = input.data.parsed.body.text || input.data.parsed.body.html || '';
         const matches = text.match(URL_REGEX);
         links = matches || [];
       }
     } else {
       // For URL input, the URL itself is the link
-      links = [input.data.url];
+      const urlInput = input.data as UrlInput;
+      links = [urlInput.url];
     }
 
     // Quick heuristic check for malicious links
@@ -185,14 +207,17 @@ export class ContentRiskAnalyzer {
       const hostname = urlObj.hostname.toLowerCase();
       const path = urlObj.pathname.toLowerCase();
 
-      // Check for typosquatting indicators
+      // Check for typosquatting indicators (exact typo variants only)
       const typosquattingPatterns = [
-        /paypa1/i,  // paypal with 1
-        /g00gle/i,  // google with 0
-        /microso[f|t]t/i, // microsoft variations
+        /paypa1/i,         // Only matches "paypa1", not "paypal"
+        /g00gle/i,         // Only matches "g00gle" (two zeros), not "google"
+        /amaz0n/i,         // Only matches "amaz0n" (zero), not "amazon"
+        /faceb00k/i,       // Only matches "faceb00k" (two zeros), not "facebook"
+        /appl3/i,          // Only matches "appl3", not "apple"
+        /micr0s0ft/i,      // Only matches "micr0s0ft", not "microsoft"
         /\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/, // IP address
-        /[a-z0-9]{20,}/i, // Very long random subdomain
-        /-{3,}/,  // Multiple consecutive hyphens
+        /[a-z0-9]{20,}/i,  // Very long random subdomain
+        /-{3,}/,           // Multiple consecutive hyphens
       ];
 
       if (typosquattingPatterns.some((pattern) => pattern.test(hostname))) {
@@ -259,6 +284,76 @@ export class ContentRiskAnalyzer {
   }
 
   /**
+   * Analyze images and QR codes (email only)
+   */
+  private analyzeImages(input: NormalizedInput): {
+    hasImages: boolean;
+    imageCount: number;
+    hasQRCodes: boolean;
+    qrCodeCount: number;
+  } {
+    if (!isEmailInput(input)) {
+      return {
+        hasImages: false,
+        imageCount: 0,
+        hasQRCodes: false,
+        qrCodeCount: 0,
+      };
+    }
+
+    const html = input.data.parsed.body.html || '';
+    const text = input.data.parsed.body.text || '';
+    const combined = `${html} ${text}`;
+
+    // Image detection (HTML <img> tags and base64 data URIs)
+    const imageRegex = /<img[^>]+src=["']([^"']+)["'][^>]*>/gi;
+    const base64ImageRegex = /data:image\/[^;]+;base64,/g;
+
+    const images: string[] = [];
+    let match;
+    while ((match = imageRegex.exec(combined)) !== null) {
+      images.push(match[1]);
+    }
+
+    const base64Images = combined.match(base64ImageRegex) || [];
+    const hasImages = images.length > 0 || base64Images.length > 0;
+    const imageCount = images.length + base64Images.length;
+
+    // QR code detection (heuristic: images with "qr" in filename or alt text)
+    const qrCodeHeuristic = /qr[-_]?code|barcode|qrcode/i;
+    const hasQRCodes = images.some((img) => qrCodeHeuristic.test(img)) ||
+      combined.match(/<img[^>]*alt=["'][^"']*qr[-_]?code[^"']*["'][^>]*>/i) !== null;
+
+    const qrCodeCount = hasQRCodes ? 1 : 0; // Conservative estimate
+
+    return {
+      hasImages,
+      imageCount,
+      hasQRCodes,
+      qrCodeCount,
+    };
+  }
+
+  /**
+   * Analyze forms (email only)
+   */
+  private analyzeForms(input: NormalizedInput): {
+    hasForms: boolean;
+  } {
+    if (!isEmailInput(input)) {
+      return { hasForms: false };
+    }
+
+    const html = input.data.parsed.body.html || '';
+
+    // Detect HTML forms
+    const formRegex = /<form[^>]*>/i;
+    const hasForms = formRegex.test(html);
+
+    return { hasForms };
+  }
+
+  /**
    * Analyze urgency language (email only)
    */
   private analyzeUrgency(input: NormalizedInput): {
@@ -270,7 +365,7 @@ export class ContentRiskAnalyzer {
       return { hasUrgency: false, score: 0, indicators: [] };
     }
 
-    const text = (input.data.parsed.text || input.data.parsed.html || '').toLowerCase();
+    const text = (input.data.parsed.body.text || input.data.parsed.body.html || '').toLowerCase();
     const subject = (input.data.parsed.subject || '').toLowerCase();
     const combined = `${subject} ${text}`;
 

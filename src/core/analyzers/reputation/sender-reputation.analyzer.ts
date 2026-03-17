@@ -71,6 +71,10 @@ export class SenderReputationAnalyzer extends BaseAnalyzer {
     'paypa1.com',
     'g00gle.com',
     'amaz0n.com',
+    'faceb00k.com',
+    'appl3.com',
+    'micr0s0ft.com',
+    'yah00.com',
   ]);
 
   // Analyzer-specific options (configurable per integration)
@@ -602,14 +606,14 @@ export class SenderReputationAnalyzer extends BaseAnalyzer {
     const hyphenCount = (lowerDomain.match(/-/g) || []).length;
     if (hyphenCount > 3) return true;
 
-    // Check for numbers mixed with brand names (paypa1, g00gle)
+    // Check for typosquatting variants (exact patterns only - not matching legitimate domains)
     const suspiciousPatterns = [
-      /paypa[l1]/,
-      /g[o0]{2}gle/,
-      /amaz[o0]n/,
-      /faceb[o0]{2}k/,
-      /app[l1]e/,
-      /micr[o0]s[o0]ft/,
+      /paypa1/,          // Only matches "paypa1", not "paypal"
+      /g00gle/,          // Only matches "g00gle" (two zeros), not "google"
+      /amaz0n/,          // Only matches "amaz0n" (zero), not "amazon"
+      /faceb00k/,        // Only matches "faceb00k" (two zeros), not "facebook"
+      /appl3/,           // Only matches "appl3" (digit 3), not "apple"
+      /micr0s0ft/,       // Only matches "micr0s0ft" (zeros), not "microsoft"
     ];
 
     return suspiciousPatterns.some((pattern) => pattern.test(lowerDomain));

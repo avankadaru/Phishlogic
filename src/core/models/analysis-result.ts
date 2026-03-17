@@ -74,7 +74,8 @@ export type SignalType =
   | 'automatic_download_detected'
   | 'script_execution_detected'
   | 'installation_prompt_detected'
-  | 'suspicious_javascript_detected';
+  | 'suspicious_javascript_detected'
+  | 'js_scan_skipped';
 
 /**
  * Severity levels for analysis signals
@@ -266,6 +267,9 @@ export interface AnalysisResult {
 
   /** Human-readable explanation of the verdict */
   reasoning: string;
+
+  /** Recommended actions based on verdict */
+  actions: string[];
 
   /** All signals produced during analysis */
   signals: AnalysisSignal[];

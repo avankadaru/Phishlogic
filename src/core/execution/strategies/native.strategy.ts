@@ -12,7 +12,6 @@ import type { AnalysisResult } from '../../models/analysis-result.js';
 import { getAnalyzerRegistry } from '../../engine/analyzer-registry.js';
 import { getVerdictService } from '../../services/verdict.service.js';
 import { getLogger } from '../../../infrastructure/logging/index.js';
-import { getConfig } from '../../../config/app.config.js';
 
 const logger = getLogger();
 
@@ -20,11 +19,58 @@ export class NativeExecutionStrategy extends BaseExecutionStrategy {
   async execute(context: ExecutionContext): Promise<ExecutionResult> {
     this.addExecutionStep(context, 'native_execution_started', 'started');
 
-    // Get analyzers based on trust level and content risk (content-aware bypass)
+    // Get analyzers based on whitelist entry and content profile (content-based filtering)
     const analyzerRegistry = getAnalyzerRegistry();
-    let analyzers = (context.trustLevel || context.riskProfile)
-      ? analyzerRegistry.getFilteredAnalyzers(context.trustLevel, context.riskProfile)
-      : analyzerRegistry.getAnalyzers();
+
+    // Require riskProfile - if not provided, fail fast
+    if (!context.riskProfile) {
+      throw new Error('Content risk profile is required for analyzer filtering');
+    }
+
+    // Get filtered analyzers (content-based)
+    let analyzers = analyzerRegistry.getFilteredAnalyzers(
+      context.whitelistEntry,
+      context.riskProfile
+    );
+
+    // If no analyzers to run (e.g., trusted email with no content), return safe verdict
+    if (analyzers.length === 0) {
+      const reason = context.whitelistEntry
+        ? `Trusted sender with no risk indicators detected.`
+        : `No content requiring analysis detected.`;
+
+      const duration = 0;
+      this.addExecutionStep(context, 'native_execution_completed', 'completed', { duration });
+
+      return {
+        result: {
+          verdict: 'Safe',
+          confidence: 1.0,
+          score: 0.0,
+          alertLevel: 'none',
+          redFlags: [],
+          reasoning: reason,
+          actions: [],
+          signals: [],
+          metadata: {
+            duration,
+            timestamp: new Date(),
+            analyzersRun: [],
+            analysisId: context.analysisId,
+            executionSteps: context.executionSteps,
+            contentRisk: {
+              hasLinks: context.riskProfile.hasLinks,
+              hasAttachments: context.riskProfile.hasAttachments,
+              hasUrgencyLanguage: context.riskProfile.hasUrgencyLanguage,
+              overallRiskScore: context.riskProfile.overallRiskScore,
+            },
+            riskScore: context.riskProfile.overallRiskScore,
+          },
+        },
+        actualMode: 'native',
+        aiMetadata: undefined,
+      };
+    }
 
     // Filter analyzers based on integration configuration if analyzerOptions is provided
     if (context.analyzerOptions && Object.keys(context.analyzerOptions).length > 0) {
@@ -44,19 +90,21 @@ export class NativeExecutionStrategy extends BaseExecutionStrategy {
       });
     }
 
-    const config = getConfig();
-
-    // Log trust level decisions for audit trail
-    if (config.whitelist.trustLevelLogging && context.trustLevel) {
-      logger.info({
-        msg: 'Running conditional analysis based on trust level and content risk',
-        analysisId: context.analysisId,
-        trustLevel: context.trustLevel,
-        riskScore: context.riskProfile?.overallRiskScore,
-        analyzerCount: analyzers.length,
-        analyzersToRun: analyzers.map((a) => a.getName()),
-      });
-    }
+    // Log filtering decisions for audit trail
+    logger.info({
+      msg: 'Running content-based filtered analysis',
+      analysisId: context.analysisId,
+      isTrusted: context.whitelistEntry?.isTrusted ?? false,
+      riskScore: context.riskProfile.overallRiskScore,
+      contentProfile: {
+        hasLinks: context.riskProfile.hasLinks,
+        hasAttachments: context.riskProfile.hasAttachments,
+        hasImages: context.riskProfile.hasImages,
+        hasQRCodes: context.riskProfile.hasQRCodes,
+      },
+      analyzerCount: analyzers.length,
+      analyzersToRun: analyzers.map((a) => a.getName()),
+    });
 
     // Run all analyzers in parallel (Promise.allSettled for independence)
     const { result: analyzerResults, durationMs } = await this.measureTime(async () => {
@@ -128,6 +176,7 @@ export class NativeExecutionStrategy extends BaseExecutionStrategy {
       alertLevel: verdict.alertLevel,
       redFlags: verdict.redFlags,
       reasoning: verdict.reasoning,
+      actions: verdict.actions,
       signals: allSignals,
       metadata: {
         duration: durationMs,

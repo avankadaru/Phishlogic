@@ -14,7 +14,7 @@
 import { NormalizedInput } from '../models/input.js';
 import { AnalysisResult, ExecutionStep } from '../models/analysis-result.js';
 import { AIMetadata } from '../services/analysis-persistence.service.js';
-import type { TrustLevel } from '../models/whitelist.js';
+import type { WhitelistEntry } from '../models/whitelist.js';
 import type { ContentRiskProfile } from '../analyzers/risk/content-risk.analyzer.js';
 
 /**
@@ -45,10 +45,10 @@ export interface ExecutionContext {
   /** Execution steps tracking (mutable) */
   executionSteps: ExecutionStep[];
 
-  /** Trust level for whitelist partial bypass (optional) */
-  trustLevel?: TrustLevel;
+  /** Whitelist entry for trusted senders (optional) */
+  whitelistEntry?: WhitelistEntry;
 
-  /** Content risk profile for content-aware filtering (optional) */
+  /** Content risk profile for content-aware filtering (ALWAYS present) */
   riskProfile?: ContentRiskProfile;
 
   /** Analyzer-specific options keyed by analyzer name (optional) */

@@ -1,15 +1,36 @@
 import { cn } from '@/lib/utils';
 import { AlertCircle, CheckCircle, AlertTriangle } from 'lucide-react';
+import { ThreatDisplay } from './ThreatDisplay';
+import type { AnalysisSignal, EnrichedThreat } from '@/types';
 
 interface Props {
   result: {
     verdict: 'Safe' | 'Suspicious' | 'Malicious';
     confidence: number;
     redFlags: string[];
+    actionItems?: string[];
     executionMode?: string;
     aiProvider?: string;
     processingTimeMs?: number;
+    signals?: AnalysisSignal[];
   };
+}
+
+function extractThreatsFromSignals(signals?: AnalysisSignal[]): EnrichedThreat[] | null {
+  const scriptSignal = signals?.find(s => s.signalType === 'script_execution_detected');
+
+  if (!scriptSignal?.evidence?.enrichedThreats) {
+    return null;
+  }
+
+  const { inline, external, runtime, dom } = scriptSignal.evidence.enrichedThreats;
+
+  return [
+    ...inline,
+    ...external.flatMap(ext => ext.threats),
+    ...runtime,
+    ...dom
+  ];
 }
 
 export function ResultDisplay({ result }: Props) {
@@ -81,6 +102,53 @@ export function ResultDisplay({ result }: Props) {
           </p>
         )}
       </div>
+
+      {/* JavaScript Scan Status */}
+      {(() => {
+        const skipSignal = result.signals?.find(s => s.signalType === 'js_scan_skipped');
+        if (skipSignal) {
+          return (
+            <div className="bg-blue-50 dark:bg-blue-950/30 rounded-lg p-3 border border-blue-200 dark:border-blue-800">
+              <p className="text-sm font-medium text-blue-900 dark:text-blue-200 mb-1">
+                ⚡ JavaScript Scan Optimized
+              </p>
+              <p className="text-xs text-blue-800 dark:text-blue-300">
+                {skipSignal.description}
+              </p>
+              {skipSignal.evidence?.explanation && (
+                <p className="text-xs text-blue-700 dark:text-blue-400 mt-2">
+                  {String(skipSignal.evidence.explanation)}
+                </p>
+              )}
+            </div>
+          );
+        }
+
+        const threats = extractThreatsFromSignals(result.signals);
+        if (!threats || threats.length === 0) return null;
+
+        return (
+          <div>
+            <p className="text-sm font-medium mb-2">JavaScript Threats Detected</p>
+            <ThreatDisplay threats={threats} title="" collapsible={false} />
+          </div>
+        );
+      })()}
+
+      {/* Recommended Actions */}
+      {result.actionItems && result.actionItems.length > 0 && (
+        <div>
+          <p className="text-sm font-medium mb-2">Recommended Actions</p>
+          <ul className="space-y-1 bg-blue-50 dark:bg-blue-950/30 rounded-md p-3">
+            {result.actionItems.map((action, i) => (
+              <li key={i} className="text-sm text-blue-900 dark:text-blue-200 flex items-start">
+                <span className="mr-2 text-blue-600 dark:text-blue-400">→</span>
+                <span>{action}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {/* Metadata */}
       {(result.executionMode || result.processingTimeMs) && (

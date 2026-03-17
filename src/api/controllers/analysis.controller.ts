@@ -23,6 +23,8 @@ import { AttachmentAnalyzer } from '../../core/analyzers/attachment/attachment.a
 import { ButtonAnalyzer } from '../../core/analyzers/content/button.analyzer.js';
 import { ImageAnalyzer } from '../../core/analyzers/image/image.analyzer.js';
 import { QRCodeAnalyzer } from '../../core/analyzers/image/qrcode.analyzer.js';
+import { WhitelistService } from '../../core/services/whitelist.service.js';
+import { loginPageDetectionService } from '../../core/services/login-page-detection.service.js';
 import { getLogger } from '../../infrastructure/logging/index.js';
 
 const logger = getLogger();
@@ -48,8 +50,11 @@ const staticAnalyzers = [
   new QRCodeAnalyzer(), // QR code decoding and URL validation
 ];
 
+// Initialize services for dependency injection
+const whitelistService = new WhitelistService();
+
 const dynamicAnalyzers = [
-  new RedirectAnalyzer(),
+  new RedirectAnalyzer(whitelistService, loginPageDetectionService),
   new FormAnalyzer(),
 ];
 

@@ -257,13 +257,8 @@ function getStatusColor(status: PhaseStatus): string {
 /**
  * Get expand button label
  */
-function getExpandButtonLabel(step: EnrichedStep, isExpanded: boolean): string {
+function getExpandButtonLabel(isExpanded: boolean): string {
   if (isExpanded) return 'Collapse';
-
-  if (step.expandReason === 'failed') return 'Expand FAILED';
-  if (step.expandReason === 'slow') return 'Expand SLOW';
-  if (step.expandReason === 'top_slowest') return `Expand #${step.slowestRank} SLOWEST`;
-
   return 'Expand';
 }
 
@@ -357,8 +352,6 @@ export function ExecutionStepsTimeline({ steps }: ExecutionStepsTimelineProps) {
     <div className="space-y-2">
       {phases.map((phase, phaseIndex) => {
         const isExpanded = expandedPhases.has(phase.id);
-        const analyzerSteps = phase.steps.filter(s => s.step.startsWith('analyzer_'));
-        const nonAnalyzerSteps = phase.steps.filter(s => !s.step.startsWith('analyzer_'));
 
         return (
           <div key={phase.id} className="relative">
@@ -420,86 +413,121 @@ export function ExecutionStepsTimeline({ steps }: ExecutionStepsTimelineProps) {
               {/* Expanded phase details */}
               {isExpanded && (
                 <div className="mt-4 space-y-3">
-                  {/* Non-analyzer steps */}
-                  {nonAnalyzerSteps.map(step => (
-                    <div key={step.step} className="ml-7 border-l-2 border-gray-200 dark:border-gray-700 pl-4">
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="flex-1">
-                          <Tooltip content={renderContextTooltip(step.context)}>
-                            <div className="flex items-center gap-2">
-                              <span className="text-sm">{formatStepName(step.step)}</span>
-                              {step.status && (
-                                <Badge className={`text-xs ${getStatusColor(step.status as PhaseStatus)}`}>
-                                  {step.status}
-                                </Badge>
-                              )}
+                  {/* Sort all steps by startedAt timestamp, then group consecutive analyzer steps */}
+                  {(() => {
+                    const allSteps = [...phase.steps];
+                    allSteps.sort((a, b) => {
+                      const timeA = a.startedAt ? new Date(a.startedAt).getTime() : 0;
+                      const timeB = b.startedAt ? new Date(b.startedAt).getTime() : 0;
+                      return timeA - timeB;
+                    });
+
+                    // Group consecutive analyzer steps for parallel box
+                    const grouped: Array<EnrichedStep | EnrichedStep[]> = [];
+                    let currentAnalyzerGroup: EnrichedStep[] = [];
+
+                    allSteps.forEach(step => {
+                      if (step.step.startsWith('analyzer_')) {
+                        currentAnalyzerGroup.push(step);
+                      } else {
+                        if (currentAnalyzerGroup.length > 0) {
+                          grouped.push(currentAnalyzerGroup);
+                          currentAnalyzerGroup = [];
+                        }
+                        grouped.push(step);
+                      }
+                    });
+
+                    if (currentAnalyzerGroup.length > 0) {
+                      grouped.push(currentAnalyzerGroup);
+                    }
+
+                    return grouped.map((item, idx) => {
+                      if (Array.isArray(item)) {
+                        // Render parallel analyzer box
+                        return (
+                          <div key={`parallel-${idx}`} className="ml-7 border-2 border-dashed border-blue-300 dark:border-blue-700 rounded-lg p-3 bg-blue-50 dark:bg-blue-950">
+                            <div className="flex items-center gap-2 mb-3">
+                              <Zap className="w-4 h-4 text-blue-600" />
+                              <span className="text-sm font-medium text-blue-900 dark:text-blue-200">
+                                Parallel Execution
+                              </span>
                             </div>
-                          </Tooltip>
-                          <div className="text-xs text-muted-foreground mt-1">
-                            {step.duration !== undefined && (
-                              <>
-                                Duration: {formatDuration(step.duration)}
-                                {' | '}
-                                Cumulative: {formatDuration(step.cumulativeTime)}
-                              </>
-                            )}
+
+                            <div className="space-y-3">
+                              {item.map(step => (
+                                <div key={step.step} className="bg-white dark:bg-gray-900 rounded p-2">
+                                  <div className="flex items-start justify-between gap-2">
+                                    <div className="flex-1">
+                                      <Tooltip content={renderContextTooltip(step.context)}>
+                                        <div className="flex items-center gap-2">
+                                          {getStatusIcon(step.status as PhaseStatus)}
+                                          <span className="text-sm">{formatStepName(step.step)}</span>
+                                          {step.status && (
+                                            <Badge className={`text-xs ${getStatusColor(step.status as PhaseStatus)}`}>
+                                              {step.status}
+                                            </Badge>
+                                          )}
+                                        </div>
+                                      </Tooltip>
+                                      <div className="text-xs text-muted-foreground mt-1">
+                                        {step.duration !== undefined && (
+                                          <>
+                                            Duration: {formatDuration(step.duration)}
+                                            {' | '}
+                                            Cumulative: {formatDuration(step.cumulativeTime)}
+                                          </>
+                                        )}
+                                      </div>
+                                    </div>
+
+                                    {step.requiresExpand && (
+                                      <button
+                                        onClick={() => toggleStep(step.step)}
+                                        className={`text-xs px-2 py-1 rounded ${getExpandButtonColor(step)}`}
+                                      >
+                                        {getExpandButtonLabel(expandedSteps.has(step.step))}
+                                      </button>
+                                    )}
+                                  </div>
+
+                                  {/* Expanded step details */}
+                                  {expandedSteps.has(step.step) && (
+                                    <div className="mt-2 p-2 bg-gray-50 dark:bg-gray-900 rounded text-xs">
+                                      {step.error && (
+                                        <div className="mb-2">
+                                          <span className="font-medium text-red-600">Error:</span>
+                                          <p className="mt-1">{step.error}</p>
+                                        </div>
+                                      )}
+                                      {step.stackTrace && (
+                                        <div className="mb-2">
+                                          <span className="font-medium">Stack Trace:</span>
+                                          <pre className="mt-1 overflow-x-auto text-xs">{step.stackTrace}</pre>
+                                        </div>
+                                      )}
+                                      {step.context && Object.keys(step.context).length > 0 && (
+                                        <div>
+                                          <span className="font-medium">Context:</span>
+                                          <pre className="mt-1 overflow-x-auto">{JSON.stringify(step.context, null, 2)}</pre>
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
                           </div>
-                        </div>
-
-                        {step.requiresExpand && (
-                          <button
-                            onClick={() => toggleStep(step.step)}
-                            className={`text-xs px-2 py-1 rounded ${getExpandButtonColor(step)}`}
-                          >
-                            {getExpandButtonLabel(step, expandedSteps.has(step.step))}
-                          </button>
-                        )}
-                      </div>
-
-                      {/* Expanded step details */}
-                      {expandedSteps.has(step.step) && (
-                        <div className="mt-2 p-2 bg-gray-50 dark:bg-gray-900 rounded text-xs">
-                          {step.error && (
-                            <div className="mb-2">
-                              <span className="font-medium text-red-600">Error:</span>
-                              <p className="mt-1">{step.error}</p>
-                            </div>
-                          )}
-                          {step.stackTrace && (
-                            <div className="mb-2">
-                              <span className="font-medium">Stack Trace:</span>
-                              <pre className="mt-1 overflow-x-auto text-xs">{step.stackTrace}</pre>
-                            </div>
-                          )}
-                          {step.context && Object.keys(step.context).length > 0 && (
-                            <div>
-                              <span className="font-medium">Context:</span>
-                              <pre className="mt-1 overflow-x-auto">{JSON.stringify(step.context, null, 2)}</pre>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-
-                  {/* Parallel analyzer execution box */}
-                  {phase.isParallel && analyzerSteps.length > 0 && (
-                    <div className="ml-7 border-2 border-dashed border-blue-300 dark:border-blue-700 rounded-lg p-3 bg-blue-50 dark:bg-blue-950">
-                      <div className="flex items-center gap-2 mb-3">
-                        <Zap className="w-4 h-4 text-blue-600" />
-                        <span className="text-sm font-medium text-blue-900 dark:text-blue-200">
-                          Parallel Execution
-                        </span>
-                      </div>
-
-                      <div className="space-y-3">
-                        {analyzerSteps.map(step => (
-                          <div key={step.step} className="bg-white dark:bg-gray-900 rounded p-2">
+                        );
+                      } else {
+                        // Render regular non-analyzer step
+                        const step = item;
+                        return (
+                          <div key={step.step} className="ml-7 border-l-2 border-gray-200 dark:border-gray-700 pl-4">
                             <div className="flex items-start justify-between gap-2">
                               <div className="flex-1">
                                 <Tooltip content={renderContextTooltip(step.context)}>
                                   <div className="flex items-center gap-2">
-                                    {getStatusIcon(step.status as PhaseStatus)}
                                     <span className="text-sm">{formatStepName(step.step)}</span>
                                     {step.status && (
                                       <Badge className={`text-xs ${getStatusColor(step.status as PhaseStatus)}`}>
@@ -524,7 +552,7 @@ export function ExecutionStepsTimeline({ steps }: ExecutionStepsTimelineProps) {
                                   onClick={() => toggleStep(step.step)}
                                   className={`text-xs px-2 py-1 rounded ${getExpandButtonColor(step)}`}
                                 >
-                                  {getExpandButtonLabel(step, expandedSteps.has(step.step))}
+                                  {getExpandButtonLabel(expandedSteps.has(step.step))}
                                 </button>
                               )}
                             </div>
@@ -553,10 +581,10 @@ export function ExecutionStepsTimeline({ steps }: ExecutionStepsTimelineProps) {
                               </div>
                             )}
                           </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
+                        );
+                      }
+                    });
+                  })()}
                 </div>
               )}
             </Card>

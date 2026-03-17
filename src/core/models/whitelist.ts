@@ -8,14 +8,6 @@
 export type WhitelistType = 'email' | 'domain' | 'url';
 
 /**
- * Trust level for whitelist entries
- * - high: Complete bypass of all analysis (maximum trust)
- * - medium: Skip basic analyzers, but check links, attachments, and high-risk content
- * - low: Skip expensive analyzers only (e.g., dynamic analysis)
- */
-export type TrustLevel = 'high' | 'medium' | 'low';
-
-/**
  * Whitelist entry
  */
 export interface WhitelistEntry {
@@ -55,12 +47,20 @@ export interface WhitelistEntry {
   active: boolean;
 
   /**
-   * Trust level for this whitelist entry (defaults to 'high')
-   * - high: Complete bypass of all analysis
-   * - medium: Skip basic analyzers, but check links/attachments
-   * - low: Skip only expensive analyzers
+   * Whether this is a trusted sender/domain/url
+   * Trusted entries skip authentication checks (SPF, DKIM, sender reputation)
    */
-  trustLevel?: TrustLevel;
+  isTrusted: boolean;
+
+  /**
+   * Whether to scan attachments when present (only applies if isTrusted=true)
+   */
+  scanAttachments: boolean;
+
+  /**
+   * Whether to scan rich content (links, images, QR codes) when present (only applies if isTrusted=true)
+   */
+  scanRichContent: boolean;
 }
 
 /**
@@ -73,19 +73,14 @@ export interface WhitelistCheckResult {
   isWhitelisted: boolean;
 
   /**
-   * The matching entry if found
+   * The matching entry if found (includes isTrusted, scanAttachments, scanRichContent)
    */
-  matchedEntry?: WhitelistEntry;
+  entry?: WhitelistEntry;
 
   /**
    * Reason for the match (e.g., "exact match", "domain match")
    */
   matchReason?: string;
-
-  /**
-   * Trust level of the matched entry
-   */
-  trustLevel?: TrustLevel;
 }
 
 /**
@@ -96,5 +91,7 @@ export interface AddWhitelistEntryOptions {
   value: string;
   description?: string;
   expiresAt?: Date;
-  trustLevel?: TrustLevel;
+  isTrusted?: boolean;
+  scanAttachments?: boolean;
+  scanRichContent?: boolean;
 }

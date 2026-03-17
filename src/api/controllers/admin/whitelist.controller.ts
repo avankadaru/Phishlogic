@@ -12,12 +12,18 @@ const AddWhitelistEntrySchema = z.object({
   value: z.string().min(1),
   description: z.string().optional(),
   expiresAt: z.string().datetime().optional(),
+  isTrusted: z.boolean().optional().default(true),
+  scanAttachments: z.boolean().optional().default(true),
+  scanRichContent: z.boolean().optional().default(true),
 });
 
 const UpdateWhitelistEntrySchema = z.object({
   description: z.string().optional(),
   expiresAt: z.string().datetime().optional().nullable(),
   active: z.boolean().optional(),
+  isTrusted: z.boolean().optional(),
+  scanAttachments: z.boolean().optional(),
+  scanRichContent: z.boolean().optional(),
 });
 
 /**
@@ -54,6 +60,9 @@ export async function getAllWhitelistEntries(
         type: entry.type,
         value: entry.value,
         description: entry.description,
+        isTrusted: entry.isTrusted,
+        scanAttachments: entry.scanAttachments,
+        scanRichContent: entry.scanRichContent,
         addedAt: entry.addedAt,
         expiresAt: entry.expiresAt,
         active: entry.active,
@@ -115,6 +124,9 @@ export async function getWhitelistEntry(
         type: entry.type,
         value: entry.value,
         description: entry.description,
+        isTrusted: entry.isTrusted,
+        scanAttachments: entry.scanAttachments,
+        scanRichContent: entry.scanRichContent,
         addedAt: entry.addedAt,
         expiresAt: entry.expiresAt,
         active: entry.active,
@@ -150,6 +162,9 @@ export async function addWhitelistEntry(
       value: entryData.value,
       description: entryData.description,
       expiresAt: entryData.expiresAt ? new Date(entryData.expiresAt) : undefined,
+      isTrusted: entryData.isTrusted,
+      scanAttachments: entryData.scanAttachments,
+      scanRichContent: entryData.scanRichContent,
     });
 
     // Update added_by in database
@@ -188,6 +203,9 @@ export async function addWhitelistEntry(
         type: entry.type,
         value: entry.value,
         description: entry.description,
+        isTrusted: entry.isTrusted,
+        scanAttachments: entry.scanAttachments,
+        scanRichContent: entry.scanRichContent,
         addedAt: entry.addedAt,
         expiresAt: entry.expiresAt,
         active: entry.active,

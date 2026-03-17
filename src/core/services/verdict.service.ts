@@ -114,6 +114,22 @@ export class VerdictService {
       });
     }
 
+    // Stage 5.5: Login Page Verdict Cap (NEW - Cap verdict at Suspicious for login pages)
+    const scriptSignal = signals.find(s => s.signalType === 'script_execution_detected');
+    const hasLoginPageContext = scriptSignal?.evidence?.loginPageContext?.isLoginPage;
+
+    if (hasLoginPageContext && verdict === 'Malicious') {
+      logger.info({
+        msg: 'Capping verdict at Suspicious due to login page context',
+        originalVerdict: 'Malicious',
+        newVerdict: 'Suspicious',
+        reasoning: 'JavaScript on login pages is expected behavior'
+      });
+
+      verdict = 'Suspicious';
+      score = Math.min(score, 6.9); // Cap score below malicious threshold (7.0)
+    }
+
     // Stage 6: Calculate alert level
     const alertLevel = this.calculateAlertLevel(score, verdict);
 
@@ -184,16 +200,97 @@ export class VerdictService {
    * NEVER downgrade malicious behavior signals (downloads, script execution, etc.)
    */
   private processSignalsWithContext(signals: AnalysisSignal[]): AnalysisSignal[] {
+    // Check for login page context in JavaScript threats (NEW - Login Page Context)
+    const scriptSignal = signals.find(s => s.signalType === 'script_execution_detected');
+    if (scriptSignal?.evidence?.loginPageContext?.isLoginPage) {
+      const loginContext = scriptSignal.evidence.loginPageContext as any;
+
+      logger.info({
+        msg: 'Login page context detected - applying severity downgrade to JS threats',
+        confidence: loginContext.confidence,
+        reasoning: loginContext.reasoning
+      });
+
+      // Downgrade JavaScript threat signals
+      // Do NOT downgrade critical override threats (automatic_download, domain_blacklisted, etc.)
+      const processedSignals = signals.map(signal => {
+        // Only downgrade JavaScript-specific threats
+        if (signal.signalType !== 'script_execution_detected' &&
+            signal.signalType !== 'suspicious_javascript_detected') {
+          return signal; // Keep other signals unchanged
+        }
+
+        // Apply contextual reduction - multiply confidence by 0.7
+        const newConfidence = Math.max(0.3, signal.confidence * 0.7);
+
+        // Downgrade severity if currently high/critical
+        let newSeverity = signal.severity;
+        if (signal.severity === 'critical' || signal.severity === 'high') {
+          newSeverity = 'medium'; // Login pages → suspicious, not malicious
+        }
+
+        logger.debug({
+          msg: 'Signal downgraded due to login page context',
+          signalType: signal.signalType,
+          originalSeverity: signal.severity,
+          newSeverity,
+          originalConfidence: signal.confidence,
+          newConfidence
+        });
+
+        return {
+          ...signal,
+          severity: newSeverity,
+          confidence: newConfidence,
+          description: `${signal.description} (Login page: JS expected for validation)`,
+          evidence: {
+            ...signal.evidence,
+            contextDowngraded: true,
+            originalSeverity: signal.severity,
+            originalConfidence: signal.confidence,
+            downgradeReason: loginContext.reasoning
+          }
+        };
+      });
+
+      // Continue with reputation-based downgrading on the processed signals
+      const reputationContext = this.analyzeReputationContext(processedSignals);
+      if (reputationContext.isClean) {
+        return this.applyReputationDowngrade(processedSignals, reputationContext);
+      }
+
+      return processedSignals;
+    }
+
+    // No login page context - proceed with reputation-based downgrading
     const reputationContext = this.analyzeReputationContext(signals);
 
     if (reputationContext.isClean) {
-      logger.debug({
-        msg: 'Clean reputation detected - checking for downgradeable signals',
-        linkSignalCount: reputationContext.linkSignalCount,
-        senderSignalCount: reputationContext.senderSignalCount,
-      });
+      return this.applyReputationDowngrade(signals, reputationContext);
+    }
 
-      return signals.map((signal) => {
+    logger.debug({
+      msg: 'Threat indicators detected - no downgrading',
+      threatSignals: reputationContext.threatSignals,
+    });
+
+    return signals; // Threats detected - keep original
+  }
+
+  /**
+   * Apply reputation-based downgrading to signals
+   */
+  private applyReputationDowngrade(
+    signals: AnalysisSignal[],
+    reputationContext: ReturnType<typeof this.analyzeReputationContext>
+  ): AnalysisSignal[] {
+    logger.debug({
+      msg: 'Clean reputation detected - checking for downgradeable signals',
+      linkSignalCount: reputationContext.linkSignalCount,
+      senderSignalCount: reputationContext.senderSignalCount,
+    });
+
+    return signals.map((signal) => {
         // Check if signal can be downgraded (from config)
         if (!canDowngradeSignal(this.signalConfig, signal.signalType)) {
           return signal; // No downgrade - keep original
@@ -237,14 +334,6 @@ export class VerdictService {
 
         return signal;
       });
-    }
-
-    logger.debug({
-      msg: 'Threat indicators detected - no downgrading',
-      threatSignals: reputationContext.threatSignals,
-    });
-
-    return signals; // Threats detected - keep original
   }
 
   /**

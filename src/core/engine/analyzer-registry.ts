@@ -6,7 +6,7 @@
  */
 
 import type { IAnalyzer } from '../analyzers/base/index.js';
-import type { TrustLevel } from '../models/whitelist.js';
+import type { WhitelistEntry } from '../models/whitelist.js';
 import type { ContentRiskProfile } from '../analyzers/risk/content-risk.analyzer.js';
 import { getLogger } from '../../infrastructure/logging/index.js';
 import { getConfig } from '../../config/app.config.js';
@@ -99,152 +99,121 @@ class AnalyzerRegistry {
   }
 
   /**
-   * Get link/URL analyzers
-   * Used for HIGH trust when links are present
-   */
-  getLinkAnalyzers(): IAnalyzer[] {
-    const linkAnalyzerNames = [
-      'LinkReputationAnalyzer',
-      'UrlEntropyAnalyzer',
-      'FormAnalyzer',
-      'RedirectAnalyzer',
-    ];
-    return this.analyzers.filter((a) => linkAnalyzerNames.includes(a.getName()));
-  }
-
-  /**
-   * Get attachment analyzers
-   * Used for HIGH trust when attachments are present
-   */
-  getAttachmentAnalyzers(): IAnalyzer[] {
-    const attachmentAnalyzerNames = ['AttachmentAnalyzer'];
-    return this.analyzers.filter((a) => attachmentAnalyzerNames.includes(a.getName()));
-  }
-
-  /**
-   * Get content/NLP analyzers
-   * Used for HIGH trust when urgency language is detected
-   */
-  getContentAnalyzers(): IAnalyzer[] {
-    const contentAnalyzerNames = ['EmotionalManipulationAnalyzer', 'ContentAnalysisAnalyzer'];
-    return this.analyzers.filter((a) => contentAnalyzerNames.includes(a.getName()));
-  }
-
-  /**
-   * Get authentication analyzers (SPF, DKIM, SenderReputation)
-   * Skipped for MEDIUM/HIGH trust
-   */
-  getAuthenticationAnalyzers(): IAnalyzer[] {
-    const authAnalyzerNames = ['SPFAnalyzer', 'DKIMAnalyzer', 'SenderReputationAnalyzer'];
-    return this.analyzers.filter((a) => authAnalyzerNames.includes(a.getName()));
-  }
-
-  /**
-   * Get filtered analyzers based on trust level AND content risk
-   * This is the core of content-aware conditional bypass
+   * Get filtered analyzers based on whitelist entry AND content profile
+   * This is the core of content-based analyzer filtering
+   *
+   * @param whitelistEntry - Whitelist entry (if whitelisted)
+   * @param contentProfile - Content risk profile (ALWAYS required)
+   * @returns Array of analyzers to run
    */
   getFilteredAnalyzers(
-    trustLevel?: TrustLevel,
-    riskProfile?: ContentRiskProfile
+    whitelistEntry: WhitelistEntry | undefined,
+    contentProfile: ContentRiskProfile
   ): IAnalyzer[] {
-    const config = getConfig();
+    const allAnalyzers = this.getAnalyzers();
 
-    // If trust level is not defined or feature is disabled, run all analyzers (backward compatible)
-    if (!trustLevel || !config.whitelist.trustLevelEnabled) {
-      return this.getAnalyzers();
+    // Non-trusted or no whitelist → content-based filtering
+    if (!whitelistEntry || !whitelistEntry.isTrusted) {
+      return this.filterByContent(allAnalyzers, contentProfile, false);
     }
 
-    // HIGH trust: Conditional bypass based on content risk
-    if (trustLevel === 'high') {
-      if (!riskProfile) {
-        // No risk profile provided, run all analyzers (safe default)
-        return this.getAnalyzers();
-      }
+    // Trusted → conditional filtering based on checkboxes
+    return this.filterByContent(allAnalyzers, contentProfile, true, whitelistEntry);
+  }
 
-      // If no risk indicators at all, return empty array (full bypass)
-      if (riskProfile.overallRiskScore === 0) {
-        if (config.whitelist.trustLevelLogging) {
-          logger.info({
-            msg: 'HIGH trust with no risk indicators - full bypass',
-            trustLevel: 'high',
-            riskScore: 0,
-          });
+  /**
+   * Filter analyzers by content presence
+   *
+   * @param analyzers - All available analyzers
+   * @param contentProfile - Content risk profile
+   * @param isTrusted - Whether sender is trusted
+   * @param whitelistEntry - Whitelist entry (optional, for trusted senders)
+   * @returns Filtered analyzers
+   */
+  private filterByContent(
+    analyzers: IAnalyzer[],
+    contentProfile: ContentRiskProfile,
+    isTrusted: boolean,
+    whitelistEntry?: WhitelistEntry
+  ): IAnalyzer[] {
+    const filtered: IAnalyzer[] = [];
+
+    for (const analyzer of analyzers) {
+      const name = analyzer.getName();
+
+      // Authentication analyzers - only for non-trusted
+      if (['SpfAnalyzer', 'DkimAnalyzer', 'SenderReputationAnalyzer'].includes(name)) {
+        if (!isTrusted) {
+          filtered.push(analyzer);
         }
-        return [];
+        continue;
       }
 
-      // Selective analysis based on risk indicators
-      const analyzersToRun: IAnalyzer[] = [];
-
-      if (riskProfile.hasLinks) {
-        analyzersToRun.push(...this.getLinkAnalyzers());
+      // Attachment analyzer - content-based
+      if (name === 'AttachmentAnalyzer') {
+        if (contentProfile.hasAttachments) {
+          if (!isTrusted || whitelistEntry?.scanAttachments) {
+            filtered.push(analyzer);
+          }
+        }
+        continue;
       }
 
-      if (riskProfile.hasAttachments) {
-        analyzersToRun.push(...this.getAttachmentAnalyzers());
+      // Link/Image/QR/Form analyzers - content-based + rich content checkbox
+      if ([
+        'LinkReputationAnalyzer',
+        'UrlEntropyAnalyzer',
+        'ImageAnalyzer',
+        'QRCodeAnalyzer',
+        'FormAnalyzer',
+        'RedirectAnalyzer',
+        'ButtonAnalyzer',
+      ].includes(name)) {
+        const hasRelevantContent =
+          ((name.includes('Link') ||
+            name.includes('Url') ||
+            name === 'FormAnalyzer' ||
+            name === 'RedirectAnalyzer' ||
+            name === 'ButtonAnalyzer') &&
+            contentProfile.hasLinks) ||
+          (name === 'ImageAnalyzer' && contentProfile.hasImages) ||
+          (name === 'QRCodeAnalyzer' && contentProfile.hasQRCodes);
+
+        if (hasRelevantContent) {
+          if (!isTrusted || whitelistEntry?.scanRichContent) {
+            filtered.push(analyzer);
+          }
+        }
+        continue;
       }
 
-      if (riskProfile.hasUrgencyLanguage) {
-        analyzersToRun.push(...this.getContentAnalyzers());
+      // Content analysis - run if urgency detected (always, even for trusted)
+      if (name === 'ContentAnalysisAnalyzer' || name === 'EmotionalManipulationAnalyzer') {
+        if (contentProfile.hasUrgencyLanguage) {
+          filtered.push(analyzer);
+        }
+        continue;
       }
 
-      // Remove duplicates
-      const uniqueAnalyzers = Array.from(new Set(analyzersToRun));
-
-      if (config.whitelist.trustLevelLogging) {
-        logger.info({
-          msg: 'HIGH trust with risk indicators - selective analysis',
-          trustLevel: 'high',
-          riskScore: riskProfile.overallRiskScore,
-          analyzersToRun: uniqueAnalyzers.map((a) => a.getName()),
-          analyzersCount: uniqueAnalyzers.length,
-        });
-      }
-
-      return uniqueAnalyzers;
+      // Default: include analyzer (for any new analyzers not explicitly handled)
+      filtered.push(analyzer);
     }
 
-    // MEDIUM trust: Always verify links/attachments/content, skip authentication
-    if (trustLevel === 'medium') {
-      const allAnalyzers = this.getAnalyzers();
-      const authAnalyzers = this.getAuthenticationAnalyzers();
-      const authNames = new Set(authAnalyzers.map((a) => a.getName()));
+    logger.debug({
+      msg: 'Analyzers filtered by content',
+      isTrusted,
+      contentProfile: {
+        hasLinks: contentProfile.hasLinks,
+        hasAttachments: contentProfile.hasAttachments,
+        hasImages: contentProfile.hasImages,
+        hasQRCodes: contentProfile.hasQRCodes,
+        hasUrgency: contentProfile.hasUrgencyLanguage,
+      },
+      analyzersCount: filtered.length,
+      analyzers: filtered.map((a) => a.getName()),
+    });
 
-      const analyzersToRun = allAnalyzers.filter((a) => !authNames.has(a.getName()));
-
-      if (config.whitelist.trustLevelLogging) {
-        logger.info({
-          msg: 'MEDIUM trust - verify content, skip authentication',
-          trustLevel: 'medium',
-          analyzersToRun: analyzersToRun.map((a) => a.getName()),
-          analyzersCount: analyzersToRun.length,
-        });
-      }
-
-      return analyzersToRun;
-    }
-
-    // LOW trust: Run all except expensive browser-based analyzers (Form, Redirect)
-    if (trustLevel === 'low') {
-      const expensiveAnalyzerNames = ['FormAnalyzer', 'RedirectAnalyzer'];
-      const analyzersToRun = this.analyzers.filter(
-        (a) => !expensiveAnalyzerNames.includes(a.getName())
-      );
-
-      if (config.whitelist.trustLevelLogging) {
-        logger.info({
-          msg: 'LOW trust - full analysis, skip expensive browser checks',
-          trustLevel: 'low',
-          analyzersToRun: analyzersToRun.map((a) => a.getName()),
-          analyzersCount: analyzersToRun.length,
-        });
-      }
-
-      return analyzersToRun;
-    }
-
-    // Default: run all analyzers
-    return this.getAnalyzers();
+    return filtered;
   }
 }
 

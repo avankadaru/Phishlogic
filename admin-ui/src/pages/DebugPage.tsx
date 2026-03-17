@@ -5,9 +5,10 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { formatRelativeTime } from '@/lib/utils';
-import type { Analysis } from '@/types';
+import type { Analysis, EnrichedThreat } from '@/types';
 import { Bug, CheckCircle, AlertTriangle, XCircle, Search } from 'lucide-react';
 import { ExecutionStepsTimeline } from '@/components/ExecutionStepsTimeline';
+import { ThreatDisplay } from '@/components/ThreatDisplay';
 
 export default function DebugPage() {
   const [searchParams] = useSearchParams();
@@ -134,6 +135,31 @@ export default function DebugPage() {
       default:
         return 'bg-gray-100 text-gray-800 dark:bg-gray-900/30 dark:text-gray-400';
     }
+  };
+
+  /**
+   * Extract enriched threats from script_execution_detected signal
+   */
+  const extractEnrichedThreats = (analysis: Analysis) => {
+    const scriptSignal = analysis.signals?.find(
+      s => s.signalType === 'script_execution_detected'
+    );
+
+    if (!scriptSignal?.evidence?.enrichedThreats) {
+      return null;
+    }
+
+    const { inline, external, runtime, dom, summary } = scriptSignal.evidence.enrichedThreats;
+
+    // Flatten all threats into a single array for ThreatDisplay
+    const allThreats: EnrichedThreat[] = [
+      ...inline,
+      ...external.flatMap(ext => ext.threats),
+      ...runtime,
+      ...dom
+    ];
+
+    return { threats: allThreats, summary };
   };
 
   if (loading) {
@@ -485,6 +511,46 @@ export default function DebugPage() {
                       <ExecutionStepsTimeline steps={analysis.executionSteps} />
                     </div>
                   )}
+                  {/* JavaScript Threat Detection */}
+                  {(() => {
+                    const threatData = extractEnrichedThreats(analysis);
+                    if (!threatData) return null;
+
+                    const { threats, summary } = threatData;
+                    const seriousCount = summary.criticalCount + summary.highCount + summary.mediumCount;
+
+                    return (
+                      <div className="mt-4">
+                        <div className="flex items-center justify-between mb-3">
+                          <p className="text-sm font-medium text-muted-foreground">
+                            JavaScript Security Analysis
+                          </p>
+                          <div className="flex items-center gap-2">
+                            {summary.criticalCount > 0 && (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200">
+                                CRITICAL: {summary.criticalCount}
+                              </span>
+                            )}
+                            {summary.highCount > 0 && (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200">
+                                HIGH: {summary.highCount}
+                              </span>
+                            )}
+                            {summary.mediumCount > 0 && (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200">
+                                MEDIUM: {summary.mediumCount}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <ThreatDisplay
+                          threats={threats}
+                          title="Detected Threats"
+                          collapsible={summary.benignCount > 0 && seriousCount === 0}
+                        />
+                      </div>
+                    );
+                  })()}
                 </div>
               </CardContent>
             </Card>

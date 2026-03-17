@@ -116,6 +116,7 @@ export class HybridExecutionStrategy extends BaseExecutionStrategy {
           alertLevel: verdict.alertLevel,
           redFlags: verdict.redFlags,
           reasoning: verdict.reasoning,
+          actions: verdict.actions,
           signals: aiResult.signals,
           metadata: {
             duration: totalDuration,

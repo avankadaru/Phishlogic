@@ -1,5 +1,443 @@
 # PhishLogic Troubleshooting Guide
 
+## Getting Started
+
+### Prerequisites
+- Node.js v18+ installed
+- PostgreSQL running locally (port 5432)
+- Database "Phishlogic" created
+- Environment file configured (copy from `.env.example` to `.env`)
+
+### Starting Development Servers
+
+#### 1. Start Backend Server (Port 3000)
+
+```bash
+# From project root directory
+npm run dev
+```
+
+**What it does:**
+- Starts Fastify server on port 3000
+- Connects to PostgreSQL database
+- Loads environment variables from `.env`
+- Enables hot-reload for TypeScript files
+
+**Expected Output:**
+```
+Server listening at http://localhost:3000
+Database connected successfully
+```
+
+#### 2. Start Admin UI (Port 5173)
+
+**Open a SEPARATE terminal window/tab** (backend must keep running)
+
+```bash
+# From project root directory
+cd admin-ui
+npm run dev
+```
+
+**What it does:**
+- Starts Vite development server on port 5173
+- Serves React admin interface
+- Enables hot-module replacement (HMR)
+
+**Expected Output:**
+```
+  VITE v5.x.x  ready in xxx ms
+
+  ➜  Local:   http://localhost:5173/
+  ➜  Network: use --host to expose
+```
+
+**Access the UI:**
+Open http://localhost:5173 in your browser
+
+---
+
+### Common Startup Errors
+
+#### Error: "EADDRINUSE: address already in use"
+
+**Symptom:**
+```
+Error: listen EADDRINUSE: address already in use :::3000
+    at Server.setupListenHandle [as _listen2]
+```
+
+**Cause:** Another process is already using the port (previous server instance still running)
+
+**Solution 1: Kill Process by Port (macOS/Linux)**
+
+```bash
+# Kill backend server (port 3000)
+lsof -ti :3000 | xargs kill -9
+
+# Kill UI server (port 5173)
+lsof -ti :5173 | xargs kill -9
+```
+
+**Solution 2: Find and Kill Process Manually**
+
+```bash
+# Find process using port 3000
+lsof -i :3000
+
+# Output example:
+# COMMAND   PID   USER   FD   TYPE   DEVICE SIZE/OFF NODE NAME
+# node    12345  user   22u  IPv6  0x1234  0t0  TCP *:3000 (LISTEN)
+
+# Kill by PID
+kill -9 12345
+```
+
+**Solution 3: Use Different Port (Temporary)**
+
+```bash
+# Backend - set PORT in .env
+PORT=3001 npm run dev
+
+# UI - specify port
+cd admin-ui
+npm run dev -- --port 5174
+```
+
+#### Error: "Cannot find module '@fastify/...'"
+
+**Cause:** Dependencies not installed
+
+**Solution:**
+```bash
+# Install backend dependencies
+npm install
+
+# Install UI dependencies
+cd admin-ui
+npm install
+```
+
+#### Error: "FATAL: database 'Phishlogic' does not exist"
+
+**Cause:** PostgreSQL database not created
+
+**Solution:**
+```bash
+# Create database
+createdb -U phishlogic Phishlogic
+
+# Or using psql
+psql -U postgres -c "CREATE DATABASE Phishlogic OWNER phishlogic;"
+```
+
+#### Error: "getaddrinfo ENOTFOUND localhost"
+
+**Cause:** PostgreSQL not running or wrong host
+
+**Solution:**
+```bash
+# Start PostgreSQL (macOS with Homebrew)
+brew services start postgresql@14
+
+# Or check if it's running
+pg_isready
+
+# Verify connection settings in .env
+DB_HOST=localhost
+DB_PORT=5432
+DB_NAME=Phishlogic
+DB_USER=phishlogic
+DB_PASSWORD=your_password
+```
+
+---
+
+## Debugging Analysis Execution
+
+### Enable Debug Mode
+
+**Set LOG_LEVEL environment variable:**
+```bash
+# Start with debug logging
+LOG_LEVEL=debug npm run dev
+
+# Or temporarily in .env file
+LOG_LEVEL=debug
+LOG_PRETTY_PRINT=true
+```
+
+**Available Log Levels:** error, warn, info (default), debug
+
+**Additional Debug Settings:**
+```bash
+ANALYSIS_TIMEOUT=60000             # Increase for debugging
+WHITELIST_TRUST_LEVEL_LOGGING=true # Log trust level decisions
+```
+
+---
+
+### Common Breakpoint Locations
+
+#### Analysis Controller (Entry Point)
+**File:** `src/api/controllers/analysis.controller.ts`
+
+**Key breakpoints:**
+- Line 122: `analyzeEmail()` function entry
+- Line 127: After input validation
+- Line 135: After input normalization
+- Line 142: Before `engine.analyze()` call (critical handoff point)
+
+#### Analysis Engine (Orchestration)
+**File:** `src/core/engine/analysis.engine.ts`
+
+**Key breakpoints:**
+- Line 67: `analyze()` function entry
+- Line 114: Whitelist check
+- Line 131: Content risk analysis
+- Line 256: Strategy execution
+- Line 330: Error handling
+
+#### Native Execution Strategy
+**File:** `src/core/execution/strategies/native.strategy.ts`
+
+**Key breakpoints:**
+- Line 25: Analyzer filtering
+- Line 62: Analyzer execution (Promise.allSettled)
+- Line 80: Individual analyzer.analyze() calls
+- Line 121: Verdict calculation
+
+---
+
+### Debugging "Analyze Email" Flow
+
+#### Request Flow
+```
+EmailTestPage (Admin UI)
+  ↓ POST /api/analyze/email
+Analysis Controller
+  ↓ Validates & normalizes input
+Analysis Engine
+  ↓ Whitelist check → Content risk
+  ↓ Load integration config
+  ↓ Route to execution strategy
+Native Strategy
+  ↓ Filter & run analyzers in parallel
+Verdict Service
+  ↓ Calculate score & verdict
+Analysis Engine (finally)
+  ↓ Persist to database
+Response ← JSON result
+```
+
+#### Debug Workflow
+
+**Option 1: Console Logging**
+```bash
+LOG_LEVEL=debug npm run dev
+
+# Observe in terminal:
+# - Input validation
+# - Whitelist check results
+# - Execution steps (started/completed/failed)
+# - Analyzer signals
+# - Final verdict calculation
+```
+
+**Option 2: Query Database**
+```bash
+# Get recent analyses
+curl http://localhost:3000/api/admin/debug/analyses?limit=10
+
+# Get specific analysis
+curl http://localhost:3000/api/admin/debug/analyses/{analysisId}
+```
+
+**Option 3: Debug Script**
+```bash
+npx tsx scripts/test-debug-api.ts
+npx tsx scripts/debug-analyzer-filtering.ts
+```
+
+---
+
+### Understanding Logging vs Debugging
+
+**IMPORTANT:** There are two different debugging approaches - don't confuse them!
+
+#### 1. Debug Logging (Shows Console Output)
+```bash
+LOG_LEVEL=debug npm run dev
+```
+- ✓ Shows debug-level log messages in terminal
+- ✓ Good for seeing what the code is doing
+- ✗ Does NOT let you set breakpoints
+- ✗ Does NOT pause execution
+- **Use case:** Quick runtime inspection, production debugging
+
+#### 2. VSCode Debugger (Breakpoints & Step-Through)
+Press **F5** in VSCode or use **Run → "Debug Backend"**
+- ✓ Hit breakpoints in your code
+- ✓ Step through code line by line (F10, F11)
+- ✓ Inspect variables at runtime
+- ✓ Pause, resume, step over, step into
+- **Use case:** Deep investigation, finding bugs, understanding flow
+
+**⚠️ If breakpoints aren't being hit:** You're probably using method #1 (logging) when you need method #2 (debugger). Running `npm run dev` won't trigger breakpoints - you must use VSCode's debugger (F5).
+
+---
+
+### VSCode Debugging Setup
+
+**Prerequisites:**
+1. VSCode with "Run and Debug" panel (View → Run, or Ctrl+Shift+D)
+2. `.vscode/launch.json` file (should now exist, created automatically)
+
+**Verify launch.json exists:**
+```bash
+ls -la .vscode/launch.json
+```
+
+**Configuration in `.vscode/launch.json`:**
+```json
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug Backend",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["tsx", "--inspect-brk", "src/index.ts"],
+      "port": 9229,
+      "env": {
+        "NODE_ENV": "development",
+        "LOG_LEVEL": "debug"
+      },
+      "console": "integratedTerminal",
+      "skipFiles": ["<node_internals>/**"]
+    }
+  ]
+}
+```
+
+**How to Start Debugging:**
+
+1. **Stop any running `npm run dev` processes** (Ctrl+C in terminals)
+
+2. **Set breakpoints:** Click line numbers in VSCode (red dots appear)
+   - **Recommended locations:**
+     - `src/api/controllers/analysis.controller.ts:142` - Before engine.analyze()
+     - `src/core/engine/analysis.engine.ts:67` - Analysis start
+     - `src/core/engine/analysis.engine.ts:114` - Whitelist check
+     - `src/core/execution/strategies/native.strategy.ts:62` - Analyzer execution
+
+3. **Start debugger:** Press **F5** or click Run → "Debug Backend"
+   - Backend starts with "Debugger listening on ws://127.0.0.1:9229..."
+   - Server starts: "Server listening on http://localhost:3000"
+
+4. **Trigger analysis:**
+   - Navigate to http://localhost:5173/testing/email
+   - Fill in From and Subject fields
+   - Click "Analyze Email"
+
+5. **Debugger pauses at your breakpoints:**
+   - Yellow highlight shows current line
+   - Debug toolbar appears at top
+   - Variables panel shows local variables
+   - Call stack shows function hierarchy
+
+**Debug Controls:**
+- **Continue (F5):** Resume until next breakpoint
+- **Step Over (F10):** Execute current line, move to next
+- **Step Into (F11):** Enter function call
+- **Step Out (Shift+F11):** Exit current function
+- **Stop (Shift+F5):** Stop debugging
+
+**Troubleshooting:**
+- Breakpoints show **gray circle** (not red): Debugger not attached, press F5
+- "Cannot connect to runtime process": Port 9229 in use, kill it: `lsof -ti :9229 | xargs kill -9`
+- Breakpoints still not hit: Verify TypeScript source maps are enabled
+
+---
+
+### Inspecting Execution Steps
+
+#### Via Debug API
+```bash
+# Get analysis with execution steps
+curl http://localhost:3000/api/admin/debug/analyses/{analysisId}
+
+# Response includes executionSteps array:
+{
+  "step": "whitelist_check_started",
+  "status": "completed",
+  "duration": 45,
+  "context": { "trustLevel": "high" }
+}
+```
+
+#### Typical Step Sequence
+```
+1. request_received (completed)
+2. whitelist_check_started (completed)
+3. content_risk_analysis_started (completed)
+4. config_loading_started (completed)
+5. strategy_execution_started (completed)
+   ├─ analyzer_SenderReputationAnalyzer_completed
+   ├─ analyzer_LinkReputationAnalyzer_completed
+   └─ ...
+6. email_alert_check (completed)
+7. response_sent (completed)
+```
+
+#### Troubleshooting Failed Steps
+```json
+{
+  "step": "analyzer_FormAnalyzer_failed",
+  "status": "failed",
+  "error": "Timeout exceeded",
+  "duration": 5000
+}
+```
+
+**Check:**
+- Timeout settings (BROWSER_TIMEOUT, DYNAMIC_ANALYSIS_TIMEOUT)
+- Network connectivity
+- Logs around failure time
+
+---
+
+### Quick Reference
+
+**Enable debug mode:**
+```bash
+LOG_LEVEL=debug npm run dev
+```
+
+**Query recent analyses:**
+```bash
+curl http://localhost:3000/api/admin/debug/analyses?limit=10
+```
+
+**Debug specific analysis:**
+```bash
+curl http://localhost:3000/api/admin/debug/analyses/{analysisId}
+```
+
+**Test debug service:**
+```bash
+npx tsx scripts/test-debug-api.ts
+```
+
+**Key log fields:**
+- `analysisId` - Trace analysis through logs
+- `executionMode` - native/hybrid/ai
+- `verdict`, `score` - Final result
+- `processingTime` - Duration in ms
+
+---
+
 ## Understanding Dynamic Analyzer Behavior
 
 **Common Question: "I don't see any login form in the email body - where did the form detection come from?"**

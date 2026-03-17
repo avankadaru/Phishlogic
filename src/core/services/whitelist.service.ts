@@ -29,7 +29,9 @@ function mapRowToEntry(row: any): WhitelistEntry {
     addedAt: new Date(row.created_at),
     expiresAt: row.expires_at ? new Date(row.expires_at) : undefined,
     active: row.is_active,
-    trustLevel: row.trust_level || 'high',
+    isTrusted: row.is_trusted ?? true,
+    scanAttachments: row.scan_attachments ?? true,
+    scanRichContent: row.scan_rich_content ?? true,
   };
 }
 
@@ -50,13 +52,14 @@ export class WhitelistService {
   async addEntry(options: AddWhitelistEntryOptions): Promise<WhitelistEntry> {
     const id = randomUUID();
     const normalizedValue = this.normalizeValue(options.value, options.type);
-    const config = getConfig();
-    const trustLevel = options.trustLevel || config.whitelist.defaultTrustLevel;
+    const isTrusted = options.isTrusted ?? true;
+    const scanAttachments = options.scanAttachments ?? true;
+    const scanRichContent = options.scanRichContent ?? true;
 
     const result = await query(
       `INSERT INTO whitelist_entries
-       (id, tenant_id, type, value, description, expires_at, added_by, trust_level)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       (id, tenant_id, type, value, description, expires_at, added_by, is_trusted, scan_attachments, scan_rich_content)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING *`,
       [
         id,
@@ -66,7 +69,9 @@ export class WhitelistService {
         options.description,
         options.expiresAt,
         'system',
-        trustLevel,
+        isTrusted,
+        scanAttachments,
+        scanRichContent,
       ]
     );
 
@@ -74,6 +79,9 @@ export class WhitelistService {
       entryId: id,
       type: options.type,
       value: normalizedValue,
+      isTrusted,
+      scanAttachments,
+      scanRichContent,
       tenantId: this.tenantId,
     }, 'Whitelist entry added');
 
@@ -320,9 +328,8 @@ export class WhitelistService {
 
       return {
         isWhitelisted: true,
-        matchedEntry: entry,
+        entry,
         matchReason: 'exact email match',
-        trustLevel: entry.trustLevel,
       };
     }
 
@@ -357,9 +364,8 @@ export class WhitelistService {
 
       return {
         isWhitelisted: true,
-        matchedEntry: entry,
+        entry,
         matchReason: 'exact domain match',
-        trustLevel: entry.trustLevel,
       };
     }
 
@@ -396,9 +402,8 @@ export class WhitelistService {
 
       return {
         isWhitelisted: true,
-        matchedEntry: entry,
+        entry,
         matchReason: isExactMatch ? 'exact URL match' : 'URL prefix match',
-        trustLevel: entry.trustLevel,
       };
     }
 

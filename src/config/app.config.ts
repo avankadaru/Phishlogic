@@ -61,6 +61,8 @@ const AnalysisConfigSchema = z.object({
     contextThreatIntelBoost: z.coerce.number().min(0).max(0.5).default(0.2),
     contextCriticalBoost: z.coerce.number().min(0).max(0.5).default(0.3),
   }),
+  // JavaScript security scan timeout (milliseconds)
+  scriptScanTimeoutMs: z.coerce.number().int().min(1000).max(30000).default(10000),
 });
 
 /**
@@ -219,6 +221,7 @@ export function loadConfig(): AppConfig {
         contextThreatIntelBoost: process.env['CONTEXT_THREAT_INTEL_BOOST'],
         contextCriticalBoost: process.env['CONTEXT_CRITICAL_BOOST'],
       },
+      scriptScanTimeoutMs: process.env['SCRIPT_SCAN_TIMEOUT_MS'],
     },
     browser: {
       poolSize: process.env['BROWSER_POOL_SIZE'],
