@@ -1,33 +1,59 @@
 /**
  * Login Page Detection Service
  *
- * Determines if a page is a legitimate login page using multiple detection strategies:
- * - Form field analysis (password, email fields)
+ * Comprehensive authentication page detection using 12 parallel detectors:
+ * - URL pattern analysis - Form field analysis (password, email fields)
  * - Keyword detection (sign in, login, register, forgot password)
  * - OAuth provider buttons (Google, Facebook, GitHub, etc.)
+ * - SSO provider detection (Okta, Auth0, Azure AD, etc.)
  * - Mobile number login detection
  * - Page context analysis (titles, headings)
+ * - MFA/OTP detection
+ * - CAPTCHA detection
+ * - CSRF protection detection
+ * - Shadow DOM scanning
+ * - iframe auth provider detection
+ * - Hidden form detection
  *
- * Returns confidence score (0.0-1.0) indicating likelihood page is a login page.
+ * Returns weighted score and auth type classification (LOGIN, OAUTH, SSO, MFA).
  *
- * Design: Strategy pattern for extensibility - new detection strategies can be added easily.
+ * Design: SOLID principles - detector classes for extensibility.
  */
 
+import { Page } from 'playwright';
 import { getLogger } from '../../infrastructure/logging/index.js';
 
 const logger = getLogger();
 
+export type AuthType = 'LOGIN' | 'OAUTH' | 'SSO' | 'MFA' | 'UNKNOWN';
+
+export interface AuthSignal {
+  type: string;
+  weight: number;
+  source?: string;
+}
+
 export interface LoginPageDetectionResult {
-  isLoginPage: boolean;
-  confidence: number; // 0.0-1.0
-  indicators: LoginPageIndicator[];
+  isLoginPage: boolean; // backward compatibility (same as isAuthPage)
+  isAuthPage?: boolean; // alias for isLoginPage
+  authType: AuthType;
+  confidence: number; // 0.0-1.0 (normalized score)
+  score: number; // raw weighted score
+  signals: AuthSignal[];
+  indicators: LoginPageIndicator[]; // backward compatibility
   evidence: {
     keywords: string[];
     oauthProviders: string[];
+    ssoProviders: string[];
     hasMobileInput: boolean;
     hasPasswordField: boolean;
     hasEmailField: boolean;
+    hasMFA: boolean;
+    hasCaptcha: boolean;
+    hasCSRF: boolean;
+    detectionMethod: string[];
   };
+  timingMs?: number;
 }
 
 export interface LoginPageIndicator {
@@ -37,8 +63,424 @@ export interface LoginPageIndicator {
   value?: string; // What was detected
 }
 
+// Detector interface (Dependency Inversion Principle)
+interface AuthDetector {
+  detect(page: Page, url: string, html?: string): Promise<AuthSignal[]>;
+}
+
+// URL Pattern Detector (Single Responsibility)
+class URLPatternDetector implements AuthDetector {
+  async detect(_page: Page, url: string): Promise<AuthSignal[]> {
+    const patterns = ['login', 'signin', 'auth', 'session', 'password', 'account/login', 'authenticate'];
+    const signals: AuthSignal[] = [];
+
+    for (const pattern of patterns) {
+      if (url.includes(pattern)) {
+        signals.push({ type: 'url_login_pattern', weight: 2, source: 'url' });
+        break; // Only count once
+      }
+    }
+
+    return signals;
+  }
+}
+
+// OAuth Flow Detector
+class OAuthDetector implements AuthDetector {
+  async detect(_page: Page, url: string): Promise<AuthSignal[]> {
+    const oauthParams = ['client_id', 'redirect_uri', 'response_type', 'scope', 'state', 'code_challenge'];
+    const signals: AuthSignal[] = [];
+
+    for (const param of oauthParams) {
+      if (url.includes(param)) {
+        signals.push({ type: 'oauth_flow', weight: 3, source: 'url' });
+        break; // Only count once
+      }
+    }
+
+    return signals;
+  }
+}
+
+// SSO Provider Detector
+class SSOProviderDetector implements AuthDetector {
+  private readonly ssoProviders = [
+    'okta', 'auth0', 'onelogin', 'pingidentity', 'adfs', 'saml',
+    'login.microsoftonline', 'accounts.google', 'idp'
+  ];
+
+  async detect(_page: Page, url: string): Promise<AuthSignal[]> {
+    const signals: AuthSignal[] = [];
+
+    for (const provider of this.ssoProviders) {
+      if (url.includes(provider)) {
+        signals.push({ type: 'sso_provider', weight: 4, source: provider });
+        break; // Only count once
+      }
+    }
+
+    return signals;
+  }
+}
+
+// DOM Form Detector
+class DOMFormDetector implements AuthDetector {
+  async detect(page: Page): Promise<AuthSignal[]> {
+    try {
+      return await page.evaluate(() => {
+        const signals: any[] = [];
+
+        if (document.querySelector('input[type="password"]')) {
+          signals.push({ type: 'password_input', weight: 5, source: 'dom' });
+        }
+
+        if (document.querySelector('input[type="email"],input[name*="user"],input[name*="email"]')) {
+          signals.push({ type: 'user_identifier', weight: 2, source: 'dom' });
+        }
+
+        const buttons = [...document.querySelectorAll('button,input[type="submit"]')];
+        const loginBtn = buttons.find(b => {
+          const text = ((b as HTMLElement).innerText || (b as HTMLInputElement).value || '').toLowerCase();
+          return text.includes('login') || text.includes('sign in');
+        });
+
+        if (loginBtn) {
+          signals.push({ type: 'login_button', weight: 1, source: 'dom' });
+        }
+
+        return signals;
+      });
+    } catch (error) {
+      return [];
+    }
+  }
+}
+
+// MFA Detector
+class MFADetector implements AuthDetector {
+  async detect(page: Page): Promise<AuthSignal[]> {
+    try {
+      return await page.evaluate(() => {
+        const signals: any[] = [];
+
+        if (document.querySelector('input[name*="otp"],input[name*="code"],input[name*="token"]')) {
+          signals.push({ type: 'mfa_input', weight: 4, source: 'dom' });
+        }
+
+        const text = document.body.innerText.toLowerCase();
+        if (text.includes('verification code') || text.includes('two-factor') || text.includes('2fa')) {
+          signals.push({ type: 'mfa_text', weight: 3, source: 'dom' });
+        }
+
+        return signals;
+      });
+    } catch (error) {
+      return [];
+    }
+  }
+}
+
+// CAPTCHA Detector
+class CaptchaDetector implements AuthDetector {
+  async detect(page: Page): Promise<AuthSignal[]> {
+    try {
+      return await page.evaluate(() => {
+        const signals: any[] = [];
+
+        if (document.querySelector('iframe[src*="captcha"]') ||
+            document.querySelector('.g-recaptcha,iframe[src*="recaptcha"],#captcha')) {
+          signals.push({ type: 'captcha_widget', weight: 3, source: 'dom' });
+        }
+
+        return signals;
+      });
+    } catch (error) {
+      return [];
+    }
+  }
+}
+
+// CSRF Protection Detector
+class CSRFDetector implements AuthDetector {
+  async detect(page: Page): Promise<AuthSignal[]> {
+    try {
+      return await page.evaluate(() => {
+        const signals: any[] = [];
+
+        if (document.querySelector('input[name*="csrf"]') ||
+            document.querySelector('input[name="authenticity_token"]')) {
+          signals.push({ type: 'csrf_protection', weight: 2, source: 'dom' });
+        }
+
+        return signals;
+      });
+    } catch (error) {
+      return [];
+    }
+  }
+}
+
+// Shadow DOM Detector
+class ShadowDOMDetector implements AuthDetector {
+  async detect(page: Page): Promise<AuthSignal[]> {
+    try {
+      return await page.evaluate(() => {
+        const signals: any[] = [];
+        const elements = document.querySelectorAll('*');
+
+        for (const el of elements) {
+          if ((el as any).shadowRoot) {
+            if ((el as any).shadowRoot.querySelector('input[type="password"]')) {
+              signals.push({ type: 'shadow_dom_password', weight: 5, source: 'shadow_dom' });
+              break;
+            }
+          }
+        }
+
+        return signals;
+      });
+    } catch (error) {
+      return [];
+    }
+  }
+}
+
+// iframe Auth Provider Detector
+class IframeAuthDetector implements AuthDetector {
+  async detect(page: Page): Promise<AuthSignal[]> {
+    try {
+      return await page.evaluate(() => {
+        const signals: any[] = [];
+        const iframes = [...document.querySelectorAll('iframe')];
+
+        for (const frame of iframes) {
+          const src = (frame.src || '').toLowerCase();
+          if (src.includes('login') || src.includes('auth') ||
+              src.includes('accounts.google') || src.includes('microsoft')) {
+            signals.push({ type: 'iframe_auth_provider', weight: 3, source: 'iframe' });
+            break;
+          }
+        }
+
+        return signals;
+      });
+    } catch (error) {
+      return [];
+    }
+  }
+}
+
+// Hidden Form Detector
+class HiddenFormDetector implements AuthDetector {
+  async detect(page: Page): Promise<AuthSignal[]> {
+    try {
+      return await page.evaluate(() => {
+        const signals: any[] = [];
+        const forms = [...document.querySelectorAll('form')];
+
+        for (const form of forms) {
+          const hidden = window.getComputedStyle(form).display === 'none';
+          if (hidden && form.querySelector('input[type="password"]')) {
+            signals.push({ type: 'hidden_login_form', weight: 3, source: 'dom' });
+            break;
+          }
+        }
+
+        return signals;
+      });
+    } catch (error) {
+      return [];
+    }
+  }
+}
+
+// Pre-render HTML Detector
+class PreRenderHTMLDetector implements AuthDetector {
+  async detect(_page: Page, _url: string, html?: string): Promise<AuthSignal[]> {
+    if (!html) return [];
+
+    const signals: AuthSignal[] = [];
+
+    if (/<input[^>]+type=["']password["']/i.test(html)) {
+      signals.push({ type: 'password_input_html', weight: 4, source: 'html' });
+    }
+
+    if (/sign\s?in|log\s?in/i.test(html)) {
+      signals.push({ type: 'login_text_html', weight: 1, source: 'html' });
+    }
+
+    if (/forgot\s+password/i.test(html)) {
+      signals.push({ type: 'forgot_password', weight: 1, source: 'html' });
+    }
+
+    return signals;
+  }
+}
+
+// SPA Route Detector
+class SPARouteDetector implements AuthDetector {
+  async detect(_page: Page, url: string): Promise<AuthSignal[]> {
+    const routes = ['/login', '/signin', '/auth', '/account', '/session'];
+    const signals: AuthSignal[] = [];
+
+    for (const route of routes) {
+      if (url.includes(route)) {
+        signals.push({ type: 'spa_login_route', weight: 2, source: 'url' });
+        break;
+      }
+    }
+
+    return signals;
+  }
+}
+
 export class LoginPageDetectionService {
-  // Login-related keywords with weights
+  private detectors: AuthDetector[];
+
+  constructor() {
+    // Initialize all detectors (Open/Closed Principle)
+    this.detectors = [
+      new URLPatternDetector(),
+      new OAuthDetector(),
+      new SSOProviderDetector(),
+      new DOMFormDetector(),
+      new MFADetector(),
+      new CaptchaDetector(),
+      new CSRFDetector(),
+      new ShadowDOMDetector(),
+      new IframeAuthDetector(),
+      new HiddenFormDetector(),
+      new PreRenderHTMLDetector(),
+      new SPARouteDetector(),
+    ];
+  }
+
+  /**
+   * Comprehensive authentication page detection using 12 parallel detectors
+   *
+   * @param page - Playwright Page object for dynamic detection
+   * @param html - Optional pre-rendered HTML for static analysis
+   * @returns Detection result with auth type, score, and evidence
+   */
+  async detectAuthPage(page: Page, html?: string): Promise<LoginPageDetectionResult> {
+    const url = page.url().toLowerCase();
+
+    // Use measureTime utility (follows pattern from execution-strategy.ts)
+    const { result, durationMs } = await this.measureTime(async () => {
+      // Run all detectors in parallel (Interface Segregation)
+      const signalArrays = await Promise.all(
+        this.detectors.map((detector) =>
+          detector.detect(page, url, html).catch((error) => {
+            logger.warn({
+              msg: 'Detector failed',
+              detector: detector.constructor.name,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            return [];
+          })
+        )
+      );
+
+      // Flatten and score
+      const signals = signalArrays.flat();
+      const score = signals.reduce((sum, s) => sum + s.weight, 0);
+
+      // Classify auth type (as specified by user)
+      const authType = this.classifyAuth(signals);
+
+      // Build evidence object
+      const evidence = this.buildEvidence(signals);
+
+      const isAuthPage = score >= 5;
+      return {
+        isLoginPage: isAuthPage, // backward compatibility
+        isAuthPage,
+        authType,
+        score,
+        signals,
+        confidence: Math.min(score / 20, 1.0), // Normalize to 0-1
+        indicators: this.convertToIndicators(signals), // backward compatibility
+        evidence,
+      };
+    });
+
+    logger.info({
+      msg: 'Auth detection completed',
+      url,
+      isAuthPage: result.isAuthPage,
+      authType: result.authType,
+      score: result.score,
+      signalCount: result.signals.length,
+      timingMs: durationMs,
+    });
+
+    // Return result with timing
+    return { ...result, timingMs: durationMs };
+  }
+
+  /**
+   * Measure execution time (follows pattern from execution-strategy.ts)
+   */
+  private async measureTime<T>(fn: () => Promise<T>): Promise<{ result: T; durationMs: number }> {
+    const startTime = Date.now();
+    const result = await fn();
+    const durationMs = Date.now() - startTime;
+    return { result, durationMs };
+  }
+
+  /**
+   * Classify authentication type based on detected signals
+   */
+  private classifyAuth(signals: AuthSignal[]): AuthType {
+    if (signals.some((s) => s.type === 'oauth_flow')) return 'OAUTH';
+    if (signals.some((s) => s.type === 'sso_provider')) return 'SSO';
+    if (signals.some((s) => s.type === 'mfa_input' || s.type === 'mfa_text')) return 'MFA';
+    if (signals.some((s) => s.type.includes('password'))) return 'LOGIN';
+    return 'LOGIN';
+  }
+
+  /**
+   * Build evidence object from signals
+   */
+  private buildEvidence(signals: AuthSignal[]): LoginPageDetectionResult['evidence'] {
+    return {
+      keywords: signals.filter((s) => s.source === 'url' && s.type.includes('login')).map((s) => s.type),
+      oauthProviders: signals.filter((s) => s.type === 'oauth_flow').map((s) => s.source || 'oauth'),
+      ssoProviders: signals.filter((s) => s.type === 'sso_provider').map((s) => s.source || 'sso'),
+      hasPasswordField: signals.some((s) => s.type.includes('password')),
+      hasEmailField: signals.some((s) => s.type === 'user_identifier'),
+      hasMobileInput: signals.some((s) => s.type === 'mobile_input'),
+      hasMFA: signals.some((s) => s.type.includes('mfa')),
+      hasCaptcha: signals.some((s) => s.type.includes('captcha')),
+      hasCSRF: signals.some((s) => s.type.includes('csrf')),
+      detectionMethod: [...new Set(signals.map((s) => s.source).filter(Boolean))] as string[],
+    };
+  }
+
+  /**
+   * Convert new signals format to old indicators format (backward compatibility)
+   */
+  private convertToIndicators(signals: AuthSignal[]): LoginPageIndicator[] {
+    return signals.map((signal) => ({
+      type: this.mapSignalTypeToIndicatorType(signal.type),
+      weight: signal.weight / 10, // Normalize to old scale
+      detected: true,
+      value: signal.source,
+    }));
+  }
+
+  /**
+   * Map new signal types to old indicator types
+   */
+  private mapSignalTypeToIndicatorType(signalType: string): LoginPageIndicator['type'] {
+    if (signalType.includes('oauth')) return 'oauth_provider';
+    if (signalType.includes('password') || signalType.includes('user')) return 'form_field';
+    if (signalType.includes('mobile') || signalType.includes('mfa')) return 'mobile_input';
+    if (signalType.includes('url') || signalType.includes('text')) return 'keyword';
+    return 'page_context';
+  }
+
+  // Login-related keywords with weights (old method compatibility)
   private readonly LOGIN_KEYWORDS: Record<string, number> = {
     // Primary login keywords (high weight)
     'sign in': 0.3,
@@ -231,16 +673,33 @@ export class LoginPageDetectionService {
       oauthProviders: detectedOAuthProviders,
     });
 
+    // Convert to new format for backward compatibility
+    const signals: AuthSignal[] = indicators.map(ind => ({
+      type: ind.value || ind.type,
+      weight: ind.weight * 10, // Scale back up
+      source: ind.type
+    }));
+
+    const score = signals.reduce((sum, s) => sum + s.weight, 0);
+
     return {
       isLoginPage,
+      authType: detectedOAuthProviders.length > 0 ? 'OAUTH' : 'LOGIN',
       confidence: finalConfidence,
+      score,
+      signals,
       indicators,
       evidence: {
         keywords: detectedKeywords,
         oauthProviders: detectedOAuthProviders,
+        ssoProviders: [],
         hasMobileInput: hasMobileLogin || pageContent.formFields.hasMobile,
         hasPasswordField: pageContent.formFields.hasPassword,
         hasEmailField: pageContent.formFields.hasEmail,
+        hasMFA: false,
+        hasCaptcha: false,
+        hasCSRF: false,
+        detectionMethod: ['legacy_extraction'],
       },
     };
   }
@@ -257,4 +716,14 @@ export class LoginPageDetectionService {
 }
 
 // Singleton instance
-export const loginPageDetectionService = new LoginPageDetectionService();
+let serviceInstance: LoginPageDetectionService | null = null;
+
+export function getLoginDetectionService(): LoginPageDetectionService {
+  if (!serviceInstance) {
+    serviceInstance = new LoginPageDetectionService();
+  }
+  return serviceInstance;
+}
+
+// Export singleton instance for backward compatibility
+export const loginPageDetectionService = getLoginDetectionService();

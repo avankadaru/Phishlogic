@@ -114,16 +114,19 @@ export class VerdictService {
       });
     }
 
-    // Stage 5.5: Login Page Verdict Cap (NEW - Cap verdict at Suspicious for login pages)
-    const scriptSignal = signals.find(s => s.signalType === 'script_execution_detected');
-    const hasLoginPageContext = scriptSignal?.evidence?.loginPageContext?.isLoginPage;
+    // Stage 5.5: Auth Page Verdict Cap (NEW - Cap verdict at Suspicious for auth pages)
+    const scriptSignalForCap = signals.find(s => s.signalType === 'script_execution_detected');
+    const authContext = scriptSignalForCap?.evidence?.['loginPageContext'] as any;
+    const hasAuthPageContext = authContext?.isLoginPage && authContext?.score >= 5;
 
-    if (hasLoginPageContext && verdict === 'Malicious') {
+    if (hasAuthPageContext && verdict === 'Malicious') {
       logger.info({
-        msg: 'Capping verdict at Suspicious due to login page context',
+        msg: 'Capping verdict at Suspicious due to auth page context',
         originalVerdict: 'Malicious',
         newVerdict: 'Suspicious',
-        reasoning: 'JavaScript on login pages is expected behavior'
+        authType: authContext.authType || 'LOGIN',
+        score: authContext.score,
+        reasoning: 'JavaScript on authentication pages is expected behavior'
       });
 
       verdict = 'Suspicious';
@@ -200,15 +203,74 @@ export class VerdictService {
    * NEVER downgrade malicious behavior signals (downloads, script execution, etc.)
    */
   private processSignalsWithContext(signals: AnalysisSignal[]): AnalysisSignal[] {
-    // Check for login page context in JavaScript threats (NEW - Login Page Context)
+    // Check for auth page context in JavaScript threats (NEW - Enhanced Auth Detection)
     const scriptSignal = signals.find(s => s.signalType === 'script_execution_detected');
-    if (scriptSignal?.evidence?.loginPageContext?.isLoginPage) {
-      const loginContext = scriptSignal.evidence.loginPageContext as any;
+    let loginContext = scriptSignal?.evidence?.['loginPageContext'] as any;
+
+    // Enhanced check: Require both isLoginPage AND score >= 5
+    // APPLIES TO ALL DOMAINS: Even non-legitimate domains benefit from downgrade
+    if (loginContext?.isLoginPage && loginContext?.score >= 5) {
+      logger.info({
+        msg: 'Auth page context detected - applying severity downgrade to JS threats',
+        authType: loginContext.authType || 'LOGIN',
+        score: loginContext.score,
+        confidence: loginContext.confidence,
+        detectionMethod: loginContext.detectionMethod,
+        reasoning: loginContext.reasoning || 'JavaScript is expected on authentication pages'
+      });
+    } else if (!loginContext || !loginContext.isLoginPage) {
+      // Fallback: Check redirect URL patterns for login pages
+      const redirectSignal = signals.find(s => s.signalType === 'suspicious_redirect');
+      if (redirectSignal?.evidence?.['finalUrl']) {
+        const finalUrl = String(redirectSignal.evidence['finalUrl']);
+        const loginPatterns = [
+          '/signin', '/login', '/auth', '/authenticate',
+          '/account/login', '/session/new', '/sso',
+          'login.microsoftonline', 'accounts.google', 'okta.com', 'auth0.com'
+        ];
+
+        if (loginPatterns.some(p => finalUrl.toLowerCase().includes(p))) {
+          logger.info({
+            msg: 'Auth context inferred from redirect pattern (fallback)',
+            originalUrl: redirectSignal.evidence['originalUrl'],
+            finalUrl,
+            reasoning: 'URL pattern indicates authentication page'
+          });
+
+          // Create synthetic login context for downgrade logic
+          loginContext = {
+            isLoginPage: true,
+            authType: 'LOGIN',
+            confidence: 0.5,
+            score: 5,
+            reasoning: 'Inferred from URL pattern - JavaScript expected on auth pages'
+          };
+        }
+      }
+    }
+
+    // Apply downgrade if we have valid auth context
+    if (loginContext?.isLoginPage && loginContext?.score >= 5) {
+      // Determine confidence multiplier based on auth type
+      // SSO is most trusted (0.5x), followed by OAuth (0.6x), then MFA/LOGIN (0.7x)
+      let confidenceMultiplier = 0.7; // Default for LOGIN
+      switch (loginContext.authType) {
+        case 'SSO':
+          confidenceMultiplier = 0.5;
+          break;
+        case 'OAUTH':
+          confidenceMultiplier = 0.6;
+          break;
+        case 'MFA':
+        case 'LOGIN':
+          confidenceMultiplier = 0.7;
+          break;
+      }
 
       logger.info({
-        msg: 'Login page context detected - applying severity downgrade to JS threats',
-        confidence: loginContext.confidence,
-        reasoning: loginContext.reasoning
+        msg: 'Applying auth-type-specific downgrade multiplier',
+        authType: loginContext.authType,
+        multiplier: confidenceMultiplier
       });
 
       // Downgrade JavaScript threat signals
@@ -220,8 +282,8 @@ export class VerdictService {
           return signal; // Keep other signals unchanged
         }
 
-        // Apply contextual reduction - multiply confidence by 0.7
-        const newConfidence = Math.max(0.3, signal.confidence * 0.7);
+        // Apply auth-type-specific confidence reduction
+        const newConfidence = Math.max(0.3, signal.confidence * confidenceMultiplier);
 
         // Downgrade severity if currently high/critical
         let newSeverity = signal.severity;

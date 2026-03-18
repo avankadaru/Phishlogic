@@ -333,79 +333,6 @@ export class RedirectAnalyzer extends BaseAnalyzer {
    * Extract page content for login detection
    * Lightweight extraction (~50ms) to enable smart skip optimization
    */
-  private async extractPageContentForLoginDetection(page: Page): Promise<{
-    bodyText: string;
-    title: string;
-    buttons: string[];
-    links: string[];
-    headings: string[];
-    formFields: { hasPassword: boolean; hasEmail: boolean; hasMobile: boolean };
-  }> {
-    try {
-      const content = await page.evaluate(`
-        (() => {
-          // Extract visible text
-          const bodyText = document.body?.textContent || '';
-
-          // Extract title
-          const title = document.title || '';
-
-          // Extract button text
-          const buttons = Array.from(document.querySelectorAll('button, input[type="submit"], input[type="button"]'))
-            .map(btn => btn.textContent || btn.value || '')
-            .filter(text => text.trim().length > 0);
-
-          // Extract link text
-          const links = Array.from(document.querySelectorAll('a'))
-            .map(link => link.textContent || '')
-            .filter(text => text.trim().length > 0);
-
-          // Extract headings
-          const headings = Array.from(document.querySelectorAll('h1, h2, h3, h4, h5, h6'))
-            .map(heading => heading.textContent || '')
-            .filter(text => text.trim().length > 0);
-
-          // Detect form fields
-          const hasPassword = document.querySelector('input[type="password"]') !== null;
-          const hasEmail = document.querySelector('input[type="email"], input[name*="email"]') !== null;
-          const hasMobile = document.querySelector('input[type="tel"], input[name*="phone"], input[name*="mobile"]') !== null;
-
-          return {
-            bodyText: bodyText.substring(0, 5000), // Limit to first 5000 chars
-            title,
-            buttons: buttons.slice(0, 20), // Limit arrays
-            links: links.slice(0, 20),
-            headings: headings.slice(0, 10),
-            formFields: { hasPassword, hasEmail, hasMobile }
-          };
-        })()
-      `) as {
-        bodyText: string;
-        title: string;
-        buttons: string[];
-        links: string[];
-        headings: string[];
-        formFields: { hasPassword: boolean; hasEmail: boolean; hasMobile: boolean };
-      };
-
-      return content;
-    } catch (error) {
-      logger.warn({
-        msg: 'Failed to extract page content for login detection',
-        error: error instanceof Error ? error.message : String(error)
-      });
-
-      // Return empty content on error (will not skip scan)
-      return {
-        bodyText: '',
-        title: '',
-        buttons: [],
-        links: [],
-        headings: [],
-        formFields: { hasPassword: false, hasEmail: false, hasMobile: false }
-      };
-    }
-  }
 
   /**
    * Check if domain has a legitimate TLD (basic trust indicator)
@@ -470,19 +397,33 @@ export class RedirectAnalyzer extends BaseAnalyzer {
         return { shouldSkip: false };
       }
 
-      // Step 2: Check if page is a login page
-      const pageContent = await this.extractPageContentForLoginDetection(page);
-      const loginDetection = this.loginDetectionService.detectLoginPage(pageContent);
+      // Step 2: Check if page is a login/auth page using advanced detection
+      const authDetectionTimeout = 3000;
+      const authDetection = await Promise.race([
+        this.loginDetectionService.detectAuthPage(page),
+        new Promise<any>((_, reject) =>
+          setTimeout(() => reject(new Error('Auth detection timeout')), authDetectionTimeout)
+        )
+      ]).catch((error) => {
+        logger.warn({
+          msg: 'Auth detection failed',
+          url,
+          error: error instanceof Error ? error.message : String(error)
+        });
+        return { isLoginPage: false, score: 0, confidence: 0, signals: [], evidence: {}, authType: 'UNKNOWN' };
+      });
 
-      if (!loginDetection.isLoginPage) {
-        // Not a login page - proceed with full scan
+      if (!authDetection.isLoginPage || authDetection.score < 5) {
+        // Not a login page (or score below threshold) - proceed with full scan
         logger.debug({
           msg: 'JS scan will proceed - not a login page',
           url,
           domain,
           isWhitelisted,
           isLegitimate,
-          loginConfidence: loginDetection.confidence,
+          authType: authDetection.authType,
+          score: authDetection.score,
+          confidence: authDetection.confidence,
           checkDuration: Date.now() - skipCheckStart
         });
         return { shouldSkip: false };
@@ -494,21 +435,23 @@ export class RedirectAnalyzer extends BaseAnalyzer {
         : `legitimate TLD`;
 
       logger.info({
-        msg: 'Skipping JS scan - trusted domain with login page',
+        msg: 'Skipping JS scan - trusted domain with auth page',
         url,
         domain,
         trustReason,
         isWhitelisted,
         isLegitimate,
-        loginConfidence: loginDetection.confidence,
-        keywords: loginDetection.evidence.keywords,
-        oauthProviders: loginDetection.evidence.oauthProviders,
+        authType: authDetection.authType,
+        score: authDetection.score,
+        confidence: authDetection.confidence,
+        detectionMethod: authDetection.evidence?.detectionMethod,
+        timingMs: authDetection.timingMs,
         checkDuration: Date.now() - skipCheckStart
       });
 
       return {
         shouldSkip: true,
-        reason: `Trusted domain (${trustReason}) with login page (confidence: ${(loginDetection.confidence * 100).toFixed(0)}%)`
+        reason: `Trusted domain (${trustReason}) with ${authDetection.authType} page (score: ${authDetection.score.toFixed(1)}, confidence: ${(authDetection.confidence * 100).toFixed(0)}%)`
       };
 
     } catch (error) {
@@ -803,9 +746,57 @@ export class RedirectAnalyzer extends BaseAnalyzer {
         runtimeEventPromise
       ]);
 
+      // Filter out analyzer's own instrumentation from runtime events
+      // These are false positives - our own page.evaluate() calls being detected
+      const analyzerPatterns = [
+        'detectAuthPage',
+        'detectDOMLogin',
+        'detectShadowDOM',
+        'detectIframeAuth',
+        'detectOAuth',
+        'detectSSO',
+        'detectMFA',
+        'detectCaptcha',
+        'detectCSRF',
+        'detectHiddenForm',
+        'window.__securityEvents',
+        'window.__domInjectionEvents',
+        'document.body?.textContent',
+        '// Extract visible text'
+      ];
+
+      const filteredRuntimeEvents = runtimeData.runtimeEvents.filter((event: any) => {
+        if (event.type !== 'eval_execution') return true;
+
+        const detail = String(event.detail || '');
+        const isAnalyzerCode = analyzerPatterns.some(pattern => detail.includes(pattern));
+
+        if (isAnalyzerCode) {
+          logger.debug({
+            msg: 'Filtered out analyzer instrumentation (false positive)',
+            eventType: event.type,
+            detailPreview: detail.substring(0, 100)
+          });
+          return false;
+        }
+
+        return true;
+      });
+
+      const filteredCount = runtimeData.runtimeEvents.length - filteredRuntimeEvents.length;
+      if (filteredCount > 0) {
+        logger.info({
+          msg: 'Filtered analyzer instrumentation from runtime events',
+          url,
+          totalEvents: runtimeData.runtimeEvents.length,
+          filteredCount,
+          remainingEvents: filteredRuntimeEvents.length
+        });
+      }
+
       findings.inlineScriptPatterns = inlinePatterns;
       findings.externalScripts = externalScripts.slice(0, 20); // Limit to 20
-      findings.runtimeEvents = runtimeData.runtimeEvents;
+      findings.runtimeEvents = filteredRuntimeEvents; // Use filtered events
       findings.domInjectionEvents = runtimeData.domEvents;
 
       // Define what constitutes a SERIOUS runtime threat vs benign activity
@@ -839,10 +830,10 @@ export class RedirectAnalyzer extends BaseAnalyzer {
       ]);
 
       // Separate runtime events into serious threats vs benign activity
-      const seriousRuntimeEvents = runtimeData.runtimeEvents.filter((e: any) =>
+      const seriousRuntimeEvents = filteredRuntimeEvents.filter((e: any) =>
         SERIOUS_RUNTIME_THREATS.has(e.type)
       );
-      const benignRuntimeEvents = runtimeData.runtimeEvents.filter((e: any) =>
+      const benignRuntimeEvents = filteredRuntimeEvents.filter((e: any) =>
         BENIGN_RUNTIME_ACTIVITY.has(e.type)
       );
 
@@ -879,7 +870,7 @@ export class RedirectAnalyzer extends BaseAnalyzer {
         });
       }
 
-      if (runtimeData.runtimeEvents.length > 0) {
+      if (filteredRuntimeEvents.length > 0) {
         // Group SERIOUS and BENIGN events separately
         const seriousEventCounts: Record<string, number> = {};
         seriousRuntimeEvents.forEach((event: any) => {
@@ -894,7 +885,7 @@ export class RedirectAnalyzer extends BaseAnalyzer {
         logger.info({
           msg: 'Runtime events detected',
           url,
-          totalEvents: runtimeData.runtimeEvents.length,
+          totalEvents: filteredRuntimeEvents.length,
           seriousThreats: seriousRuntimeEvents.length,
           benignActivity: benignRuntimeEvents.length,
           seriousBreakdown: seriousEventCounts,
@@ -980,7 +971,7 @@ export class RedirectAnalyzer extends BaseAnalyzer {
         .filter(script => script.threats.length > 0); // Remove scripts with no known threats
 
       // Enrich runtime events - FILTER OUT unknown threats
-      const enrichedRuntimeThreats = runtimeData.runtimeEvents
+      const enrichedRuntimeThreats = filteredRuntimeEvents
         .filter((event: any) => {
           const metadata = getThreatMetadata(event.type);
           if (!metadata) {
@@ -1043,44 +1034,66 @@ export class RedirectAnalyzer extends BaseAnalyzer {
 
       // ===================================================================
       // LOGIN PAGE CONTEXT DETECTION: Add context for verdict downgrade
-      // Detect if page is a login page to provide context for threat severity
+      // Detect if page is an auth page to provide context for threat severity
+      // APPLIES TO ALL DOMAINS: Even non-legitimate domains benefit from downgrade
+      // because JavaScript is common in mature login implementations
       // ===================================================================
       try {
-        const pageContent = await this.extractPageContentForLoginDetection(page);
-        const loginDetection = this.loginDetectionService.detectLoginPage(pageContent);
+        const authDetectionTimeout = 3000;
+        const authDetection = await Promise.race([
+          this.loginDetectionService.detectAuthPage(page),
+          new Promise<any>((_, reject) =>
+            setTimeout(() => reject(new Error('Auth detection timeout')), authDetectionTimeout)
+          )
+        ]).catch((error) => {
+          logger.warn({
+            msg: 'Auth detection failed during JS scan',
+            url,
+            error: error instanceof Error ? error.message : String(error)
+          });
+          return null;
+        });
 
-        if (loginDetection.isLoginPage && loginDetection.confidence >= 0.6) {
+        if (authDetection && authDetection.isLoginPage && authDetection.score >= 5) {
           (findings as any).loginPageContext = {
             isLoginPage: true,
-            confidence: loginDetection.confidence,
-            keywords: loginDetection.evidence.keywords,
-            oauthProviders: loginDetection.evidence.oauthProviders,
-            reasoning: `Login page detected (${(loginDetection.confidence * 100).toFixed(0)}% confidence) - JavaScript is expected for form validation and authentication`
+            authType: authDetection.authType,
+            score: authDetection.score,
+            confidence: authDetection.confidence,
+            keywords: authDetection.evidence?.keywords || [],
+            oauthProviders: authDetection.evidence?.oauthProviders || [],
+            ssoProviders: authDetection.evidence?.ssoProviders || [],
+            detectionMethod: authDetection.evidence?.detectionMethod || [],
+            reasoning: `${authDetection.authType} page detected (score: ${authDetection.score.toFixed(1)}, confidence: ${(authDetection.confidence * 100).toFixed(0)}%) - JavaScript is expected for authentication and form validation`
           };
 
           logger.info({
-            msg: 'Login page context added to JS scan results',
+            msg: 'Auth page context added to JS scan results',
             url,
-            confidence: loginDetection.confidence,
-            keywords: loginDetection.evidence.keywords,
-            oauthProviders: loginDetection.evidence.oauthProviders
+            authType: authDetection.authType,
+            score: authDetection.score,
+            confidence: authDetection.confidence,
+            detectionMethod: authDetection.evidence?.detectionMethod,
+            timingMs: authDetection.timingMs
           });
-        } else if (loginDetection.confidence > 0) {
+        } else if (authDetection && authDetection.score > 0) {
           // Log near-miss for debugging
           logger.debug({
-            msg: 'Page resembles login page but confidence too low',
+            msg: 'Page resembles auth page but score below threshold',
             url,
-            confidence: loginDetection.confidence,
-            threshold: 0.6
+            authType: authDetection.authType,
+            score: authDetection.score,
+            confidence: authDetection.confidence,
+            threshold: 5
           });
         }
       } catch (error) {
         logger.warn({
-          msg: 'Failed to detect login page context',
+          msg: 'Failed to detect auth page context',
           url,
           error: error instanceof Error ? error.message : String(error)
         });
-        // Continue without login context (won't downgrade severity)
+        // Continue without auth context (won't downgrade severity)
       }
 
       // Calculate threat level using ONLY serious threats (not benign activity)
@@ -1135,7 +1148,7 @@ export class RedirectAnalyzer extends BaseAnalyzer {
           summary: {
             inline: inlinePatterns.length,
             external: externalScripts.length,
-            runtime: runtimeData.runtimeEvents.length,
+            runtime: filteredRuntimeEvents.length,
             injections: runtimeData.domEvents.length
           }
         });
@@ -1146,7 +1159,7 @@ export class RedirectAnalyzer extends BaseAnalyzer {
         url,
         inlinePatterns: inlinePatterns.length,
         externalThreats: externalScripts.length,
-        runtimeEvents: runtimeData.runtimeEvents.length,
+        runtimeEvents: filteredRuntimeEvents.length,
         domInjections: runtimeData.domEvents.length
       });
 
@@ -1157,7 +1170,7 @@ export class RedirectAnalyzer extends BaseAnalyzer {
         summary: {
           totalInlinePatterns: inlinePatterns.length,
           totalExternalThreats: externalScripts.length,
-          totalRuntimeEvents: runtimeData.runtimeEvents.length,
+          totalRuntimeEvents: filteredRuntimeEvents.length,
           totalInjections: runtimeData.domEvents.length
         }
       };
