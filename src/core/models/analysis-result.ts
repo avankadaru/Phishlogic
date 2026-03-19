@@ -135,7 +135,30 @@ export interface RedFlag {
 export type AlertLevel = 'none' | 'low' | 'medium' | 'high';
 
 /**
- * Execution step for audit trail
+ * Log entry captured during step execution
+ */
+export interface LogEntry {
+  /** Timestamp when log was generated */
+  timestamp: Date;
+
+  /** Log level */
+  level: 'debug' | 'info' | 'warn' | 'error';
+
+  /** Log message */
+  message: string;
+
+  /** Additional metadata from log */
+  metadata?: Record<string, unknown>;
+
+  /** Source location of the log */
+  source?: {
+    file?: string;
+    line?: number;
+  };
+}
+
+/**
+ * Execution step for audit trail with hierarchical tracking
  */
 export interface ExecutionStep {
   /** Step name */
@@ -164,6 +187,40 @@ export interface ExecutionStep {
 
   /** Additional context */
   context?: Record<string, unknown>;
+
+  // Hierarchical tracking fields
+  /** Unique ID for this step (UUID) */
+  stepId: string;
+
+  /** ID of parent step (for nesting) */
+  parentStepId?: string;
+
+  /** Nesting depth (0 = root, 1 = child, etc.) */
+  depth: number;
+
+  /** Execution sequence within parent */
+  sequence: number;
+
+  /** Source attribution */
+  source: {
+    /** Source file (e.g., "native.strategy.ts") */
+    file?: string;
+    /** Component name (e.g., "NativeExecutionStrategy") */
+    component?: string;
+    /** Method name (e.g., "execute") */
+    method?: string;
+    /** Line number where step was created */
+    line?: number;
+  };
+
+  /** Logs captured during this step */
+  logs: LogEntry[];
+
+  /** True if step contains parallel sub-steps */
+  isParallel?: boolean;
+
+  /** Group ID for parallel operations */
+  parallelGroup?: string;
 }
 
 /**

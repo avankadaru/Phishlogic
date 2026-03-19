@@ -5,13 +5,16 @@
  * Best of both worlds: AI accuracy with native reliability.
  *
  * Task Independent: Works with any AI service and analyzer set
+ *
+ * IMPORTANT: This strategy returns ONLY signals (no verdict calculation).
+ * Verdict calculation is done at the engine level after strategy completes.
  */
 
-import { BaseExecutionStrategy, ExecutionContext, ExecutionResult } from '../execution-strategy.js';
+import { BaseExecutionStrategy, ExecutionContext, ExecutionResult, type StepManager } from '../execution-strategy.js';
 import { AIMetadata } from '../../services/analysis-persistence.service.js';
 import type { EnhancedContentRiskProfile } from '../../analyzers/risk/content-risk.analyzer.js';
 import { NativeExecutionStrategy } from './native.strategy.js';
-import { getLogger } from '../../../infrastructure/logging/logger.js';
+import { getLogger, setStepContext, clearStepContext } from '../../../infrastructure/logging/logger.js';
 
 const logger = getLogger();
 
@@ -45,121 +48,183 @@ export class HybridExecutionStrategy extends BaseExecutionStrategy {
   }
 
   async execute(context: ExecutionContext): Promise<ExecutionResult> {
-    this.addExecutionStep(context, 'hybrid_execution_started', 'started');
+    const stepManager = context.stepManager!;
 
-    // Check if AI is configured
-    if (!context.config?.aiProvider || !context.config?.aiModel) {
-      logger.warn({
+    // Root step - START
+    const rootStepId = stepManager.startStep({
+      name: 'hybrid_execution',
+      source: {
+        file: 'hybrid.strategy.ts',
+        component: 'HybridExecutionStrategy',
+        method: 'execute',
+      },
+    });
+
+    try {
+      // Set step context for log capture
+      setStepContext(rootStepId, (entry) => stepManager.captureLog(entry));
+
+      logger.info({
+        msg: 'Starting hybrid execution strategy',
         analysisId: context.analysisId,
-        msg: 'Hybrid mode requested but AI not configured, falling back to native immediately',
       });
 
-      this.addExecutionStep(context, 'ai_not_configured_fallback_to_native', 'completed');
-      return await this.executeNativeFallback(context, 'ai_not_configured');
-    }
+      // Check if AI is configured
+      if (!context.config?.aiProvider || !context.config?.aiModel) {
+        logger.warn({
+          analysisId: context.analysisId,
+          msg: 'Hybrid mode requested but AI not configured, falling back to native immediately',
+        });
 
-    // Try AI execution with timeout
-    try {
-      this.addExecutionStep(context, 'ai_execution_attempt_started', 'started');
+        const configCheckStepId = stepManager.startStep({
+          name: 'ai_config_check',
+          source: { file: 'hybrid.strategy.ts', method: 'execute' },
+        });
+        setStepContext(configCheckStepId, (entry) => stepManager.captureLog(entry));
 
-      const aiTimeout = context.config.aiTimeout || 30000;
-      const aiConfig = {
-        provider: context.config.aiProvider,
-        model: context.config.aiModel,
-        temperature: context.config.aiTemperature,
-        maxTokens: context.config.aiMaxTokens,
-        timeout: aiTimeout,
-      };
+        stepManager.completeStep(configCheckStepId, {
+          aiConfigured: false,
+          reason: 'AI provider or model not configured',
+        });
 
-      // Execute AI with timeout
-      const aiStartTime = Date.now();
-      const aiResult = await this.executeWithTimeout(
-        () => this.aiService.executeWithAI(context.input, aiConfig, context.riskProfile),
-        aiTimeout
-      );
-      const aiDuration = Date.now() - aiStartTime;
+        stepManager.completeStep(rootStepId, {
+          usedAI: false,
+          fallbackReason: 'ai_not_configured',
+        });
 
-      this.addExecutionStep(context, 'ai_execution_completed', 'completed', {
-        duration: aiDuration,
-        context: {
+        return await this.executeNativeFallback(context, 'ai_not_configured', stepManager);
+      }
+
+      // Try AI execution with timeout - START
+      const aiAttemptStepId = stepManager.startStep({
+        name: 'ai_execution_attempt',
+        source: { file: 'hybrid.strategy.ts', method: 'execute' },
+      });
+      setStepContext(aiAttemptStepId, (entry) => stepManager.captureLog(entry));
+
+      try {
+        logger.info({
+          msg: 'Starting AI execution attempt',
+          analysisId: context.analysisId,
+          provider: context.config.aiProvider,
+          model: context.config.aiModel,
+        });
+
+        const aiTimeout = context.config.aiTimeout || 30000;
+        const aiConfig = {
+          provider: context.config.aiProvider,
+          model: context.config.aiModel,
+          temperature: context.config.aiTemperature,
+          maxTokens: context.config.aiMaxTokens,
+          timeout: aiTimeout,
+        };
+
+        // Execute AI with timeout
+        const aiResult = await this.executeWithTimeout(
+          () => this.aiService.executeWithAI(context.input, aiConfig, context.riskProfile),
+          aiTimeout
+        );
+
+        logger.info({
+          msg: 'AI execution completed successfully',
+          analysisId: context.analysisId,
+          tokenCount: aiResult.metadata.tokens.total,
+          cost: aiResult.metadata.costUsd,
+        });
+
+        // AI attempt step - END
+        stepManager.completeStep(aiAttemptStepId, {
+          success: true,
           provider: context.config.aiProvider,
           model: context.config.aiModel,
           tokenCount: aiResult.metadata.tokens.total,
           cost: aiResult.metadata.costUsd,
-        },
-      });
-
-      // AI succeeded - use AI signals for verdict
-      const { result: verdict, durationMs: verdictDuration } = await this.measureTime(async () => {
-        const { getVerdictService } = await import('../../services/verdict.service.js');
-        const { getAnalyzerRegistry } = await import('../../engine/analyzer-registry.js');
-        const verdictService = getVerdictService();
-        const analyzerRegistry = getAnalyzerRegistry();
-        const analyzerWeights = analyzerRegistry.getAnalyzerWeights();
-        return verdictService.calculateVerdict(aiResult.signals, analyzerWeights);
-      });
-
-      const totalDuration = aiDuration + verdictDuration;
-
-      this.addExecutionStep(context, 'hybrid_execution_completed', 'completed', {
-        duration: totalDuration,
-        context: {
-          usedAI: true,
-          verdict: verdict.verdict,
-          score: verdict.score,
-        },
-      });
-
-      return {
-        result: {
-          verdict: verdict.verdict,
-          confidence: verdict.confidence,
-          score: verdict.score,
-          alertLevel: verdict.alertLevel,
-          redFlags: verdict.redFlags,
-          reasoning: verdict.reasoning,
-          actions: verdict.actions,
-          signals: aiResult.signals,
-          metadata: {
-            duration: totalDuration,
-            timestamp: new Date(),
-            analyzersRun: ['AI'],
-            analysisId: context.analysisId,
-            executionSteps: context.executionSteps,
-          },
-        },
-        aiMetadata: aiResult.metadata,
-        actualMode: 'hybrid', // Successfully used hybrid (AI)
-      };
-    } catch (error) {
-      // AI failed - determine if we should fallback
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      const shouldFallback = context.config.fallbackToNative !== false;
-
-      logger.warn({
-        analysisId: context.analysisId,
-        msg: 'AI execution failed in hybrid mode',
-        error: errorMessage,
-        willFallback: shouldFallback,
-      });
-
-      this.addExecutionStep(context, 'ai_execution_failed', 'failed', {
-        error: errorMessage,
-        context: {
-          willFallback: shouldFallback,
-        },
-      });
-
-      if (shouldFallback) {
-        // Fallback to native
-        return await this.executeNativeFallback(context, errorMessage);
-      } else {
-        // No fallback configured - throw error
-        this.addExecutionStep(context, 'hybrid_execution_failed_no_fallback', 'failed', {
-          error: errorMessage,
+          signalCount: aiResult.signals.length,
         });
-        throw error;
+
+        // Root step - END
+        stepManager.completeStep(rootStepId, {
+          usedAI: true,
+          signalCount: aiResult.signals.length,
+        });
+
+        // Return signals only - engine will calculate verdict
+        return {
+          result: {
+            verdict: 'Safe', // Placeholder - will be overwritten by engine
+            confidence: 0,
+            score: 0,
+            alertLevel: 'none',
+            redFlags: [],
+            reasoning: '',
+            actions: [],
+            signals: aiResult.signals,
+            metadata: {
+              duration: 0, // Placeholder - will be overridden by engine with actual duration
+              timestamp: new Date(),
+              analyzersRun: ['AI'],
+              analysisId: context.analysisId,
+              executionSteps: context.executionSteps,
+            },
+          },
+          aiMetadata: aiResult.metadata,
+          actualMode: 'hybrid', // Successfully used hybrid (AI)
+        };
+      } catch (error) {
+        // AI failed - determine if we should fallback
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        const shouldFallback = context.config.fallbackToNative !== false;
+
+        logger.warn({
+          analysisId: context.analysisId,
+          msg: 'AI execution failed in hybrid mode',
+          error: errorMessage,
+          willFallback: shouldFallback,
+        });
+
+        // AI attempt step - FAILED
+        stepManager.failStep(aiAttemptStepId, {
+          error: errorMessage,
+          stackTrace: error instanceof Error ? error.stack : undefined,
+          errorContext: { willFallback: shouldFallback },
+        });
+
+        if (shouldFallback) {
+          // Fallback to native
+          const fallbackResult = await this.executeNativeFallback(context, errorMessage, stepManager);
+
+          // Root step - END
+          stepManager.completeStep(rootStepId, {
+            usedAI: false,
+            fallbackReason: 'ai_execution_failed',
+            fallbackError: errorMessage,
+          });
+
+          return fallbackResult;
+        } else {
+          // No fallback configured - throw error
+          stepManager.failStep(rootStepId, {
+            error: errorMessage,
+            errorContext: { fallbackDisabled: true },
+          });
+          throw error;
+        }
       }
+    } catch (error) {
+      logger.error({
+        msg: 'Hybrid execution strategy failed',
+        analysisId: context.analysisId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+
+      stepManager.failStep(rootStepId, {
+        error: error instanceof Error ? error.message : String(error),
+        stackTrace: error instanceof Error ? error.stack : undefined,
+      });
+
+      throw error;
+    } finally {
+      clearStepContext();
     }
   }
 
@@ -168,27 +233,55 @@ export class HybridExecutionStrategy extends BaseExecutionStrategy {
    */
   private async executeNativeFallback(
     context: ExecutionContext,
-    reason: string
+    reason: string,
+    stepManager: StepManager
   ): Promise<ExecutionResult> {
-    this.addExecutionStep(context, 'fallback_to_native_started', 'started', {
-      context: { reason },
+    const fallbackStepId = stepManager.startStep({
+      name: 'fallback_to_native',
+      source: { file: 'hybrid.strategy.ts', method: 'executeNativeFallback' },
+    });
+    setStepContext(fallbackStepId, (entry) => stepManager.captureLog(entry));
+
+    logger.info({
+      msg: 'Falling back to native execution',
+      analysisId: context.analysisId,
+      reason,
     });
 
-    // Use native strategy for fallback
-    const nativeResult = await this.nativeStrategy.execute(context);
+    try {
+      // Use native strategy for fallback
+      const nativeResult = await this.nativeStrategy.execute(context);
 
-    this.addExecutionStep(context, 'fallback_to_native_completed', 'completed', {
-      context: {
-        verdict: nativeResult.result.verdict,
-        score: nativeResult.result.score,
-      },
-    });
+      logger.info({
+        msg: 'Native fallback completed',
+        analysisId: context.analysisId,
+        signalCount: nativeResult.result.signals.length,
+      });
 
-    // Return with actualMode 'native' to indicate fallback occurred
-    return {
-      ...nativeResult,
-      actualMode: 'native', // Indicate that we fell back to native
-    };
+      stepManager.completeStep(fallbackStepId, {
+        signalCount: nativeResult.result.signals.length,
+        reason,
+      });
+
+      // Return with actualMode 'native' to indicate fallback occurred
+      return {
+        ...nativeResult,
+        actualMode: 'native', // Indicate that we fell back to native
+      };
+    } catch (error) {
+      logger.error({
+        msg: 'Native fallback failed',
+        analysisId: context.analysisId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+
+      stepManager.failStep(fallbackStepId, {
+        error: error instanceof Error ? error.message : String(error),
+        stackTrace: error instanceof Error ? error.stack : undefined,
+      });
+
+      throw error;
+    }
   }
 
   /**

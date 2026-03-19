@@ -5,13 +5,16 @@
  * Pure AI execution for maximum accuracy.
  *
  * Task Independent: Works with any AI service
+ *
+ * IMPORTANT: This strategy returns ONLY signals (no verdict calculation).
+ * Verdict calculation is done at the engine level after strategy completes.
  */
 
 import { BaseExecutionStrategy, ExecutionContext, ExecutionResult } from '../execution-strategy.js';
 import { AIMetadata } from '../../services/analysis-persistence.service.js';
 
 import type { EnhancedContentRiskProfile } from '../../analyzers/risk/content-risk.analyzer.js';
-import { getLogger } from '../../../infrastructure/logging/logger.js';
+import { getLogger, setStepContext, clearStepContext } from '../../../infrastructure/logging/logger.js';
 
 const logger = getLogger();
 
@@ -41,101 +44,156 @@ export class AIExecutionStrategy extends BaseExecutionStrategy {
   }
 
   async execute(context: ExecutionContext): Promise<ExecutionResult> {
-    this.addExecutionStep(context, 'ai_execution_started', 'started');
+    const stepManager = context.stepManager!;
 
-    // Validate AI configuration
-    if (!context.config?.aiProvider || !context.config?.aiModel) {
-      const error = new Error('AI execution mode requires AI configuration');
-      this.addExecutionStep(context, 'ai_execution_failed', 'failed', {
-        error: error.message,
-      });
-      throw error;
-    }
+    // Root step - START
+    const rootStepId = stepManager.startStep({
+      name: 'ai_execution',
+      source: {
+        file: 'ai.strategy.ts',
+        component: 'AIExecutionStrategy',
+        method: 'execute',
+      },
+    });
 
     try {
-      // Execute AI analysis
-      const aiTimeout = context.config.aiTimeout || 30000;
-      const aiConfig = {
-        provider: context.config.aiProvider,
-        model: context.config.aiModel,
-        temperature: context.config.aiTemperature,
-        maxTokens: context.config.aiMaxTokens,
-        timeout: aiTimeout,
-      };
+      // Set step context for log capture
+      setStepContext(rootStepId, (entry) => stepManager.captureLog(entry));
 
-      const { result: aiResult, durationMs: aiDuration } = await this.measureTime(async () => {
-        return await this.executeWithTimeout(
+      logger.info({
+        msg: 'Starting AI execution strategy',
+        analysisId: context.analysisId,
+      });
+
+      // Validate AI configuration
+      if (!context.config?.aiProvider || !context.config?.aiModel) {
+        const error = new Error('AI execution mode requires AI configuration');
+
+        logger.error({
+          msg: 'AI configuration missing',
+          analysisId: context.analysisId,
+          error: error.message,
+        });
+
+        stepManager.failStep(rootStepId, {
+          error: error.message,
+        });
+
+        throw error;
+      }
+
+      // AI API call - START
+      const aiApiStepId = stepManager.startStep({
+        name: 'ai_api_call',
+        source: { file: 'ai.strategy.ts', method: 'execute' },
+      });
+      setStepContext(aiApiStepId, (entry) => stepManager.captureLog(entry));
+
+      try {
+        logger.info({
+          msg: 'Executing AI API call',
+          analysisId: context.analysisId,
+          provider: context.config.aiProvider,
+          model: context.config.aiModel,
+        });
+
+        const aiTimeout = context.config.aiTimeout || 30000;
+        const aiConfig = {
+          provider: context.config.aiProvider,
+          model: context.config.aiModel,
+          temperature: context.config.aiTemperature,
+          maxTokens: context.config.aiMaxTokens,
+          timeout: aiTimeout,
+        };
+
+        const aiResult = await this.executeWithTimeout(
           () => this.aiService.executeWithAI(context.input, aiConfig, context.riskProfile),
           aiTimeout
         );
-      });
 
-      this.addExecutionStep(context, 'ai_api_call_completed', 'completed', {
-        duration: aiDuration,
-        context: {
+        logger.info({
+          msg: 'AI API call completed',
+          analysisId: context.analysisId,
+          tokenCount: aiResult.metadata.tokens.total,
+          cost: aiResult.metadata.costUsd,
+          signalCount: aiResult.signals.length,
+        });
+
+        // AI API step - END
+        stepManager.completeStep(aiApiStepId, {
           provider: context.config.aiProvider,
           model: context.config.aiModel,
           tokenCount: aiResult.metadata.tokens.total,
           cost: aiResult.metadata.costUsd,
-        },
-      });
-
-      // Calculate verdict from AI signals
-      const { result: verdict, durationMs: verdictDuration } = await this.measureTime(async () => {
-        const { getVerdictService } = await import('../../services/verdict.service.js');
-        const { getAnalyzerRegistry } = await import('../../engine/analyzer-registry.js');
-        const verdictService = getVerdictService();
-        const analyzerRegistry = getAnalyzerRegistry();
-        const analyzerWeights = analyzerRegistry.getAnalyzerWeights();
-        return verdictService.calculateVerdict(aiResult.signals, analyzerWeights);
-      });
-
-      const totalDuration = aiDuration + verdictDuration;
-
-      this.addExecutionStep(context, 'ai_execution_completed', 'completed', {
-        duration: totalDuration,
-        context: {
-          verdict: verdict.verdict,
-          score: verdict.score,
           signalCount: aiResult.signals.length,
-        },
-      });
+        });
 
-      return {
-        result: {
-          verdict: verdict.verdict,
-          confidence: verdict.confidence,
-          score: verdict.score,
-          alertLevel: verdict.alertLevel,
-          redFlags: verdict.redFlags,
-          reasoning: verdict.reasoning,
-          actions: verdict.actions,
-          signals: aiResult.signals,
-          metadata: {
-            duration: totalDuration,
-            timestamp: new Date(),
-            analyzersRun: ['AI'],
-            analysisId: context.analysisId,
-            executionSteps: context.executionSteps,
+        logger.info({
+          msg: 'AI execution completed, returning signals to engine',
+          analysisId: context.analysisId,
+          signalCount: aiResult.signals.length,
+        });
+
+        // Root step - END
+        stepManager.completeStep(rootStepId, {
+          signalCount: aiResult.signals.length,
+        });
+
+        // Return signals only - engine will calculate verdict
+        return {
+          result: {
+            verdict: 'Safe', // Placeholder - will be overwritten by engine
+            confidence: 0,
+            score: 0,
+            alertLevel: 'none',
+            redFlags: [],
+            reasoning: '',
+            actions: [],
+            signals: aiResult.signals,
+            metadata: {
+              duration: 0, // Placeholder - will be overridden by engine with actual duration
+              timestamp: new Date(),
+              analyzersRun: ['AI'],
+              analysisId: context.analysisId,
+              executionSteps: context.executionSteps,
+            },
           },
-        },
-        aiMetadata: aiResult.metadata,
-        actualMode: 'ai',
-      };
+          aiMetadata: aiResult.metadata,
+          actualMode: 'ai',
+        };
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+
+        logger.error({
+          analysisId: context.analysisId,
+          msg: 'AI API call failed',
+          error: errorMessage,
+        });
+
+        stepManager.failStep(aiApiStepId, {
+          error: errorMessage,
+          stackTrace: error instanceof Error ? error.stack : undefined,
+        });
+
+        throw error;
+      }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
 
       logger.error({
         analysisId: context.analysisId,
-        msg: 'AI execution failed (no fallback)',
+        msg: 'AI execution strategy failed (no fallback)',
         error: errorMessage,
       });
 
-      this.addExecutionStep(context, 'ai_execution_failed', 'failed', {
+      stepManager.failStep(rootStepId, {
         error: errorMessage,
+        stackTrace: error instanceof Error ? error.stack : undefined,
       });
 
       throw error;
+    } finally {
+      clearStepContext();
     }
   }
 

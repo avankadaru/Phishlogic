@@ -134,6 +134,14 @@ export class ContentRiskAnalyzer {
    * Comprehensive risk assessment with parallel extractor execution
    */
   async analyzeRisk(input: NormalizedInput): Promise<EnhancedContentRiskProfile> {
+    // Log start of parallel extraction at debug level
+    logger.debug({
+      msg: 'Starting parallel content extraction',
+      extractorCount: this.extractors.length,
+      extractors: this.extractors.map((e) => e.getName()),
+      timeoutMs: this.EXTRACTION_TIMEOUT_MS,
+    });
+
     // Run all extractors in parallel with timeout
     const extractionPromise = Promise.allSettled(
       this.extractors.map((extractor) => extractor.extract(input))
@@ -164,7 +172,7 @@ export class ContentRiskAnalyzer {
       }));
     }
 
-    // Aggregate results
+    // Aggregate results and log each extractor at debug level
     const timings: Record<string, number> = {};
     const extractedData: any = {};
 
@@ -179,6 +187,15 @@ export class ContentRiskAnalyzer {
         timings[name] = durationMs;
         extractedData[name] = data;
 
+        // Log each extractor result at debug level
+        logger.debug({
+          msg: 'Extractor completed',
+          extractor: name,
+          duration: durationMs,
+          success: !error,
+          error: error || undefined,
+        });
+
         if (error) {
           logger.warn({
             msg: 'Extractor failed gracefully',
@@ -187,11 +204,22 @@ export class ContentRiskAnalyzer {
           });
         }
       } else {
-        logger.error({
+        // Log failures at debug level for individual extractors
+        logger.debug({
           msg: timedOut ? 'Extractor timed out' : 'Extractor crashed',
           extractor: name,
           error: result.reason,
         });
+
+        // Keep error-level log for crashes (not timeouts)
+        if (!timedOut) {
+          logger.error({
+            msg: 'Extractor crashed',
+            extractor: name,
+            error: result.reason,
+          });
+        }
+
         timings[name] = 0;
         extractedData[name] = extractor.getEmptyData();
       }

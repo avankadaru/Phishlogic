@@ -13,7 +13,7 @@ import { randomUUID } from 'node:crypto';
 import type { NormalizedInput } from '../models/input.js';
 import type { AnalysisResult, ExecutionStep } from '../models/analysis-result.js';
 import { getWhitelistService } from '../services/whitelist.service.js';
-import { getLogger } from '../../infrastructure/logging/index.js';
+import { getLogger, setStepContext, clearStepContext } from '../../infrastructure/logging/index.js';
 import { getEmailService } from '../../infrastructure/email/index.js';
 import { getConfig } from '../../config/index.js';
 import { ContentRiskAnalyzer } from '../analyzers/risk/content-risk.analyzer.js';
@@ -25,12 +25,15 @@ import { getIntegrationConfigService } from '../services/integration-config.serv
 import { getAIExecutionService } from '../services/ai-execution.service.js';
 import {
   ExecutionStrategyFactory,
+  StepManager,
   type ExecutionContext,
 } from '../execution/execution-strategy.js';
 import { NativeExecutionStrategy } from '../execution/strategies/native.strategy.js';
 import { HybridExecutionStrategy } from '../execution/strategies/hybrid.strategy.js';
 import { AIExecutionStrategy } from '../execution/strategies/ai.strategy.js';
 import { TaskBasedExecutionStrategy } from '../execution/strategies/task-based.strategy.js';
+import { getAnalyzerRegistry } from './analyzer-registry.js';
+import { getVerdictService } from '../services/verdict.service.js';
 
 const logger = getLogger();
 
@@ -93,40 +96,87 @@ export class AnalysisEngine {
     });
 
     const executionSteps: ExecutionStep[] = [];
+    const stepManager = new StepManager({ analysisId, input, integrationName, executionSteps } as ExecutionContext);
 
-    // Track: Request received
-    this.addExecutionStep(executionSteps, 'request_received', {
-      inputType: input.type,
-      inputId: input.id,
-      analysisId,
-      networkLatency,
-      executionMode,
+    // Root step - START
+    const rootStepId = stepManager.startStep({
+      name: 'analysis_start',
+      source: {
+        file: 'analysis.engine.ts',
+        component: 'AnalysisEngine',
+        method: 'analyze',
+      },
     });
-    this.completeExecutionStep(executionSteps, 'request_received');
 
     // 4. Execute analysis with finally block (GUARANTEES persistence)
     let result: AnalysisResult | undefined;
     let aiMetadata: any = undefined;
 
     try {
-      // Step 1: Check whitelist
-      this.addExecutionStep(executionSteps, 'whitelist_check_started');
+      // Set step context for log capture
+      setStepContext(rootStepId, (entry) => stepManager.captureLog(entry));
+      logger.info({
+        msg: 'Analysis request received',
+        analysisId,
+        inputType: input.type,
+      });
+
+      // Step 1: Check whitelist - START
+      const whitelistStepId = stepManager.startStep({
+        name: 'whitelist_check',
+        source: { file: 'analysis.engine.ts', method: 'analyze' },
+      });
+      setStepContext(whitelistStepId, (entry) => stepManager.captureLog(entry));
+
+      logger.info({
+        msg: 'Checking whitelist',
+        analysisId,
+      });
 
       const whitelistResult = await this.whitelistService.check(input);
 
-      this.completeExecutionStep(executionSteps, 'whitelist_check_started', {
+      logger.info({
+        msg: 'Whitelist check completed',
+        analysisId,
+        isWhitelisted: whitelistResult.isWhitelisted,
+        isTrusted: whitelistResult.entry?.isTrusted,
+      });
+
+      // Whitelist check - END
+      stepManager.completeStep(whitelistStepId, {
         isWhitelisted: whitelistResult.isWhitelisted,
         matchReason: whitelistResult.matchReason,
         isTrusted: whitelistResult.entry?.isTrusted,
       });
 
-      // Step 1a: ALWAYS run content risk analysis (pre-scan) for ALL emails
-      this.addExecutionStep(executionSteps, 'content_risk_analysis_started');
+      // Step 2: Content risk analysis (pre-scan) - START
+      const contentRiskStepId = stepManager.startStep({
+        name: 'content_risk_pre_scan',
+        source: {
+          file: 'content-risk.analyzer.ts',
+          component: 'ContentRiskAnalyzer',
+        },
+      });
+      setStepContext(contentRiskStepId, (entry) => stepManager.captureLog(entry));
+
+      logger.info({
+        msg: 'Starting content risk pre-scan',
+        analysisId,
+      });
 
       const contentRiskAnalyzer = new ContentRiskAnalyzer();
       const riskProfile = await contentRiskAnalyzer.analyzeRisk(input);
 
-      this.completeExecutionStep(executionSteps, 'content_risk_analysis_started', {
+      logger.info({
+        msg: 'Content risk pre-scan completed',
+        analysisId,
+        riskScore: riskProfile.overallRiskScore,
+        hasLinks: riskProfile.hasLinks,
+        hasAttachments: riskProfile.hasAttachments,
+      });
+
+      // Content risk - END
+      stepManager.completeStep(contentRiskStepId, {
         riskScore: riskProfile.overallRiskScore,
         hasLinks: riskProfile.hasLinks,
         hasAttachments: riskProfile.hasAttachments,
@@ -134,15 +184,11 @@ export class AnalysisEngine {
         hasQRCodes: riskProfile.hasQRCodes,
         hasForms: riskProfile.hasForms,
         hasUrgency: riskProfile.hasUrgencyLanguage,
-
-        // NEW: Extractor timing breakdown
         extractionTimings: riskProfile.extractionTimings,
         totalExtractionTimeMs: Object.values(riskProfile.extractionTimings || {}).reduce(
           (a, b) => a + b,
           0
         ),
-
-        // NEW: Extracted counts
         extractedDomains: riskProfile.domains?.allDomains.length || 0,
         extractedLinks: riskProfile.linkMetadata?.length || 0,
         extractedImages: riskProfile.images?.length || 0,
@@ -151,9 +197,51 @@ export class AnalysisEngine {
         extractedButtons: riskProfile.buttons?.length || 0,
       });
 
-      // Step 2: Load integration config and prepare execution context
-      this.addExecutionStep(executionSteps, 'config_loading_started');
+      // Step 3: Analyzer filtering (ENGINE LEVEL) - START
+      const filteringStepId = stepManager.startStep({
+        name: 'analyzer_filtering',
+        source: {
+          file: 'analyzer-registry.ts',
+          component: 'AnalyzerRegistry',
+        },
+      });
+      setStepContext(filteringStepId, (entry) => stepManager.captureLog(entry));
 
+      logger.info({
+        msg: 'Filtering analyzers based on content profile',
+        analysisId,
+      });
+
+      const analyzerRegistry = getAnalyzerRegistry();
+      const filteringResult = analyzerRegistry.getFilteredAnalyzersWithReasons(
+        whitelistResult.isWhitelisted ? whitelistResult.entry : undefined,
+        riskProfile
+      );
+
+      logger.info({
+        msg: 'Analyzer filtering completed',
+        analysisId,
+        analyzersSelected: filteringResult.analyzers.length,
+        analyzersSkipped: filteringResult.skipped.length,
+      });
+
+      // Filtering step - END
+      stepManager.completeStep(filteringStepId, {
+        totalAnalyzersAvailable: analyzerRegistry.getAnalyzers().length,
+        analyzersSelected: filteringResult.analyzers.length,
+        analyzersSkipped: filteringResult.skipped.length,
+        selectedAnalyzers: filteringResult.reasons.map((r) => ({
+          analyzer: r.analyzerName,
+          reason: r.reason,
+          triggeredBy: r.triggeredBy,
+        })),
+        skippedAnalyzers: filteringResult.skipped.map((s) => ({
+          analyzer: s.analyzerName,
+          reason: s.reason,
+        })),
+      });
+
+      // Step 4: Prepare execution context
       // Transform analyzer options array to keyed map for easy lookup
       const analyzerOptions = integrationConfig?.analyzers?.reduce<Record<string, Record<string, any>>>(
         (acc, analyzerOpt) => {
@@ -168,6 +256,7 @@ export class AnalysisEngine {
         input,
         integrationName,
         executionSteps,
+        stepManager,
         config: integrationConfig
           ? {
               executionMode: integrationConfig.executionMode,
@@ -183,15 +272,20 @@ export class AnalysisEngine {
         whitelistEntry: whitelistResult.isWhitelisted ? whitelistResult.entry : undefined,
         riskProfile,
         analyzerOptions,
+        // CRITICAL: Pass pre-filtered analyzers to strategy
+        analyzers: filteringResult.analyzers,
       };
 
-      this.completeExecutionStep(executionSteps, 'config_loading_started', {
-        executionMode,
-        hasAI: !!integrationConfig?.aiModelId,
+      // Step 5: Execute via strategy pattern - START
+      const strategyStepId = stepManager.startStep({
+        name: `${executionMode}_strategy_execution`,
+        source: { file: 'analysis.engine.ts', method: 'analyze' },
       });
+      setStepContext(strategyStepId, (entry) => stepManager.captureLog(entry));
 
-      // Step 3: Execute via strategy pattern
-      this.addExecutionStep(executionSteps, 'strategy_execution_started', {
+      logger.info({
+        msg: 'Starting strategy execution',
+        analysisId,
         executionMode,
       });
 
@@ -204,7 +298,74 @@ export class AnalysisEngine {
       const executionResult = await strategy.execute(context);
 
       aiMetadata = executionResult.aiMetadata;
-      result = executionResult.result;
+
+      logger.info({
+        msg: 'Strategy execution completed',
+        analysisId,
+        signalCount: executionResult.result.signals.length,
+        actualMode: executionResult.actualMode,
+      });
+
+      // Strategy step - END
+      stepManager.completeStep(strategyStepId, {
+        signalCount: executionResult.result.signals.length,
+        actualMode: executionResult.actualMode,
+      });
+
+      // Step 6: Verdict calculation (ENGINE LEVEL - OUTSIDE STRATEGY) - START
+      const verdictStepId = stepManager.startStep({
+        name: 'verdict_calculation',
+        source: {
+          file: 'verdict.service.ts',
+          component: 'VerdictService',
+        },
+      });
+      setStepContext(verdictStepId, (entry) => stepManager.captureLog(entry));
+
+      logger.info({
+        msg: 'Calculating verdict from signals',
+        analysisId,
+        signalCount: executionResult.result.signals.length,
+      });
+
+      const analyzerWeights = analyzerRegistry.getAnalyzerWeights();
+      const verdictService = getVerdictService();
+      const verdict = verdictService.calculateVerdict(executionResult.result.signals, analyzerWeights);
+
+      logger.info({
+        msg: 'Verdict calculated',
+        analysisId,
+        verdict: verdict.verdict,
+        score: verdict.score,
+        confidence: verdict.confidence,
+      });
+
+      // Verdict step - END
+      stepManager.completeStep(verdictStepId, {
+        verdict: verdict.verdict,
+        score: verdict.score,
+        confidence: verdict.confidence,
+      });
+
+      // Calculate actual duration from backend start time
+      const backendEndTime = Date.now();
+      const actualDuration = backendEndTime - backendStartTime;
+
+      // Build final result with verdict from engine
+      result = {
+        verdict: verdict.verdict,
+        confidence: verdict.confidence,
+        score: verdict.score,
+        alertLevel: verdict.alertLevel,
+        redFlags: verdict.redFlags,
+        reasoning: verdict.reasoning,
+        actions: verdict.actions,
+        signals: executionResult.result.signals,
+        metadata: {
+          ...executionResult.result.metadata,
+          duration: actualDuration, // Override with actual calculated duration
+        },
+      };
 
       // Add content risk to result metadata
       if (riskProfile) {
@@ -222,14 +383,6 @@ export class AnalysisEngine {
         result.metadata.trustLevel = whitelistResult.entry.isTrusted ? 'high' : undefined;
       }
 
-      this.completeExecutionStep(executionSteps, 'strategy_execution_started', {
-        verdict: result.verdict,
-        score: result.score,
-        actualMode: executionResult.actualMode,
-        usedAI: !!executionResult.aiMetadata,
-
-      });
-
       // Update persistence with AI metadata if available
       if (aiMetadata) {
         persistenceService.updateAIMetadata(analysisId, aiMetadata);
@@ -238,34 +391,49 @@ export class AnalysisEngine {
       // Update persistence tracking with result
       persistenceService.updateResult(analysisId, this.mapToPersistenceResult(result));
 
-      // Step 4: Send email alert if needed
-      this.addExecutionStep(executionSteps, 'email_alert_check');
+      // Step 7: Send email alert if needed - START
+      const emailAlertStepId = stepManager.startStep({
+        name: 'email_alert_check',
+        source: { file: 'analysis.engine.ts', method: 'analyze' },
+      });
+      setStepContext(emailAlertStepId, (entry) => stepManager.captureLog(entry));
 
       try {
         const emailService = getEmailService();
         await emailService.sendAlertIfNeeded(input, result);
 
-        this.completeExecutionStep(executionSteps, 'email_alert_check', {
-          alertSent:
-            result.score >= getConfig().email.alertThreshold || result.verdict === 'Malicious',
+        const alertSent = result.score >= getConfig().email.alertThreshold || result.verdict === 'Malicious';
+
+        logger.info({
+          msg: 'Email alert check completed',
+          analysisId,
+          alertSent,
+        });
+
+        // Email alert step - END
+        stepManager.completeStep(emailAlertStepId, {
+          alertSent,
         });
       } catch (error) {
         logger.error({
           msg: 'Failed to send email alert',
+          analysisId,
           error: error instanceof Error ? error.message : String(error),
         });
 
-        this.failExecutionStep(executionSteps, 'email_alert_check', {
+        stepManager.failStep(emailAlertStepId, {
           error: error instanceof Error ? error.message : String(error),
         });
       }
 
-      // Step 5: Send response
-      this.addExecutionStep(executionSteps, 'response_sent', {
+      // Root step - END
+      stepManager.completeStep(rootStepId, {
         verdict: result.verdict,
-        duration: result.metadata.duration,
+        score: result.score,
+        signalCount: result.signals.length,
+        actualMode: executionResult.actualMode,
+        usedAI: !!aiMetadata,
       });
-      this.completeExecutionStep(executionSteps, 'response_sent');
 
       logger.info({
         analysisId,
@@ -299,6 +467,12 @@ export class AnalysisEngine {
         stack: error instanceof Error ? error.stack : undefined,
       });
 
+      // Root step - FAILED
+      stepManager.failStep(rootStepId, {
+        error: error instanceof Error ? error.message : String(error),
+        stackTrace: error instanceof Error ? error.stack : undefined,
+      });
+
       // Create error result if none exists
       if (!result) {
         result = this.createErrorResult(analysisId, executionSteps);
@@ -307,6 +481,9 @@ export class AnalysisEngine {
 
       throw error;
     } finally {
+      // Clear step context
+      clearStepContext();
+
       // ALWAYS flush to database (success or failure)
       await persistenceService.flushToDatabase(analysisId);
     }

@@ -8,6 +8,8 @@ import { BaseAnalyzer } from '../base/index.js';
 import type { AnalysisSignal } from '../../models/analysis-result.js';
 import type { NormalizedInput } from '../../models/input.js';
 import { isEmailInput } from '../../models/input.js';
+import type { StepManager } from '../../execution/execution-strategy.js';
+import { setStepContext } from '../../../infrastructure/logging/index.js';
 import * as cheerio from 'cheerio';
 import sharp from 'sharp';
 import { createWorker, type Worker } from 'tesseract.js';
@@ -65,7 +67,7 @@ export class ImageAnalyzer extends BaseAnalyzer {
     return !!input.data.parsed.body.html;
   }
 
-  async analyze(input: NormalizedInput): Promise<AnalysisSignal[]> {
+  async analyze(input: NormalizedInput, stepManager?: StepManager): Promise<AnalysisSignal[]> {
     const signals: AnalysisSignal[] = [];
 
     if (!isEmailInput(input)) {
@@ -98,7 +100,7 @@ export class ImageAnalyzer extends BaseAnalyzer {
       // Analyze each image (OCR and EXIF - expensive operations)
       for (const imgSrc of imageSources) {
         try {
-          const imageSignals = await this.analyzeImage(imgSrc);
+          const imageSignals = await this.analyzeImage(imgSrc, stepManager);
           signals.push(...imageSignals);
         } catch (error) {
           // Failed to analyze this image, continue with next
@@ -142,7 +144,7 @@ export class ImageAnalyzer extends BaseAnalyzer {
   /**
    * Analyze a single image
    */
-  private async analyzeImage(imgSrc: string): Promise<AnalysisSignal[]> {
+  private async analyzeImage(imgSrc: string, stepManager?: StepManager): Promise<AnalysisSignal[]> {
     const signals: AnalysisSignal[] = [];
 
     // Handle data URLs (base64 embedded images)
@@ -153,11 +155,11 @@ export class ImageAnalyzer extends BaseAnalyzer {
       }
 
       // Perform OCR
-      const ocrSignals = await this.performOCR(imageBuffer, imgSrc);
+      const ocrSignals = await this.performOCR(imageBuffer, imgSrc, stepManager);
       signals.push(...ocrSignals);
 
       // Analyze EXIF metadata
-      const exifSignals = await this.analyzeEXIF(imageBuffer, imgSrc);
+      const exifSignals = await this.analyzeEXIF(imageBuffer, imgSrc, stepManager);
       signals.push(...exifSignals);
     }
     // Handle external image URLs (not analyzed in this version for security)
@@ -169,8 +171,22 @@ export class ImageAnalyzer extends BaseAnalyzer {
   /**
    * Perform OCR on image to extract text
    */
-  private async performOCR(imageBuffer: Buffer, imgSrc: string): Promise<AnalysisSignal[]> {
+  private async performOCR(imageBuffer: Buffer, imgSrc: string, stepManager?: StepManager): Promise<AnalysisSignal[]> {
     const signals: AnalysisSignal[] = [];
+
+    // If stepManager provided, create substep for OCR processing
+    let ocrStepId: string | undefined;
+    if (stepManager) {
+      ocrStepId = stepManager.startStep({
+        name: 'ocr_processing',
+        source: {
+          file: 'image.analyzer.ts',
+          component: 'ImageAnalyzer',
+          method: 'performOCR',
+        },
+      });
+      setStepContext(ocrStepId, (entry) => stepManager.captureLog(entry));
+    }
 
     try {
       // Initialize OCR worker if not already initialized
@@ -192,6 +208,12 @@ export class ImageAnalyzer extends BaseAnalyzer {
       } = await this.ocrWorker.recognize(processedImage);
 
       if (!text || text.trim().length === 0) {
+        if (ocrStepId && stepManager) {
+          stepManager.completeStep(ocrStepId, {
+            textExtracted: false,
+            textLength: 0,
+          });
+        }
         return signals;
       }
 
@@ -244,9 +266,27 @@ export class ImageAnalyzer extends BaseAnalyzer {
           })
         );
       }
+
+      // OCR substep - END
+      if (ocrStepId && stepManager) {
+        stepManager.completeStep(ocrStepId, {
+          textExtracted: true,
+          textLength: text.length,
+          phishingKeywordsFound: foundKeywords.length,
+          signalsGenerated: signals.length,
+        });
+      }
     } catch (error) {
       // OCR failed, not necessarily a problem
       console.error('ImageAnalyzer: OCR failed', error);
+
+      // OCR substep - FAILED
+      if (ocrStepId && stepManager) {
+        stepManager.failStep(ocrStepId, {
+          error: error instanceof Error ? error.message : String(error),
+          stackTrace: error instanceof Error ? error.stack : undefined,
+        });
+      }
     }
 
     return signals;
@@ -255,14 +295,33 @@ export class ImageAnalyzer extends BaseAnalyzer {
   /**
    * Analyze EXIF metadata for anomalies
    */
-  private async analyzeEXIF(imageBuffer: Buffer, imgSrc: string): Promise<AnalysisSignal[]> {
+  private async analyzeEXIF(imageBuffer: Buffer, imgSrc: string, stepManager?: StepManager): Promise<AnalysisSignal[]> {
     const signals: AnalysisSignal[] = [];
+
+    // If stepManager provided, create substep for EXIF analysis
+    let exifStepId: string | undefined;
+    if (stepManager) {
+      exifStepId = stepManager.startStep({
+        name: 'exif_analysis',
+        source: {
+          file: 'image.analyzer.ts',
+          component: 'ImageAnalyzer',
+          method: 'analyzeEXIF',
+        },
+      });
+      setStepContext(exifStepId, (entry) => stepManager.captureLog(entry));
+    }
 
     try {
       const parser = exifParser.create(imageBuffer);
       const result = parser.parse();
 
       if (!result.tags) {
+        if (exifStepId && stepManager) {
+          stepManager.completeStep(exifStepId, {
+            exifDataFound: false,
+          });
+        }
         return signals;
       }
 
@@ -316,8 +375,23 @@ export class ImageAnalyzer extends BaseAnalyzer {
           }
         }
       }
-    } catch {
+
+      // EXIF substep - END
+      if (exifStepId && stepManager) {
+        stepManager.completeStep(exifStepId, {
+          exifDataFound: true,
+          tagsAnalyzed: Object.keys(tags).length,
+          suspiciousMetadata: signals.length,
+        });
+      }
+    } catch (error) {
       // EXIF data not available or parsing failed (normal for many images)
+      if (exifStepId && stepManager) {
+        stepManager.completeStep(exifStepId, {
+          exifDataFound: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
 
     return signals;

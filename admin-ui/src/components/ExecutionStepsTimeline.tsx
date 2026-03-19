@@ -1,227 +1,68 @@
 import { useState, useMemo } from 'react';
-import { CheckCircle, XCircle, Clock, ArrowDown, Zap, ChevronDown, ChevronRight, AlertCircle } from 'lucide-react';
+import { CheckCircle, XCircle, Clock, AlertCircle, ChevronDown, ChevronRight, Zap } from 'lucide-react';
 import type { ExecutionStep } from '@/types';
 import { Card } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
-import { Tooltip } from '@/components/ui/Tooltip';
-import { formatDuration, calculateTotalTime } from '@/lib/utils';
+import { LogViewer } from '@/components/LogViewer';
+import { formatDuration } from '@/lib/utils';
 
-type PhaseStatus = 'completed' | 'failed' | 'skipped' | 'in_progress';
-
-interface TimelinePhase {
-  id: string;
-  name: string;
-  status: PhaseStatus;
-  startTime?: Date;
-  endTime?: Date;
-  duration?: number;
-  cumulativeTime?: number;
-  steps: EnrichedStep[];
-  isParallel: boolean;
-  requiresExpand: boolean;
-  expandReason?: 'failed' | 'slow' | 'top_slowest';
-}
-
-interface EnrichedStep extends ExecutionStep {
-  cumulativeTime: number;
-  requiresExpand: boolean;
-  expandReason?: 'failed' | 'slow' | 'top_slowest';
-  isTopSlowest?: boolean;
-  slowestRank?: number;
+/**
+ * Step tree node for hierarchical rendering
+ */
+interface StepNode {
+  step: ExecutionStep;
+  children: StepNode[];
 }
 
 /**
- * Determine phase status based on its steps
+ * Build hierarchical tree structure from flat step array
  */
-function determinePhaseStatus(steps: ExecutionStep[]): PhaseStatus {
-  if (steps.some(s => s.status === 'failed')) return 'failed';
-  if (steps.every(s => s.status === 'completed')) return 'completed';
-  if (steps.some(s => s.status === 'skipped')) return 'skipped';
-  return 'in_progress';
-}
+function buildStepTree(steps: ExecutionStep[]): StepNode[] {
+  const nodeMap = new Map<string, StepNode>();
+  const roots: StepNode[] = [];
 
-/**
- * Calculate phase timing from its steps
- */
-function calculatePhaseTiming(steps: ExecutionStep[]) {
-  const completedSteps = steps.filter(s => s.completedAt && s.startedAt);
-  if (completedSteps.length === 0) return {};
+  // Create nodes for all steps
+  steps.forEach((step) => {
+    nodeMap.set(step.stepId, { step, children: [] });
+  });
 
-  const startTime = new Date(Math.min(...completedSteps.map(s =>
-    new Date(s.startedAt!).getTime()
-  )));
-  const endTime = new Date(Math.max(...completedSteps.map(s =>
-    new Date(s.completedAt!).getTime()
-  )));
-  const duration = endTime.getTime() - startTime.getTime();
+  // Build parent-child relationships
+  steps.forEach((step) => {
+    const node = nodeMap.get(step.stepId);
+    if (!node) return;
 
-  return { startTime, endTime, duration };
-}
-
-/**
- * Create a phase object
- */
-function createPhase(id: string, name: string, steps: EnrichedStep[]): TimelinePhase {
-  const status = determinePhaseStatus(steps);
-  const timing = calculatePhaseTiming(steps);
-  const requiresExpand = steps.some(s => s.requiresExpand);
-  const expandReason = steps.find(s => s.requiresExpand)?.expandReason;
-
-  // Calculate cumulative time as the max cumulative from steps in this phase
-  const cumulativeTime = steps.length > 0
-    ? Math.max(...steps.map(s => s.cumulativeTime))
-    : 0;
-
-  return {
-    id,
-    name,
-    status,
-    steps,
-    isParallel: false,
-    requiresExpand,
-    expandReason,
-    cumulativeTime,
-    ...timing,
-  };
-}
-
-/**
- * Enrich steps with cumulative time
- */
-function enrichStepsWithCumulativeTime(steps: ExecutionStep[]): EnrichedStep[] {
-  if (steps.length === 0) return [];
-
-  const allStarts = steps
-    .filter(s => s.startedAt)
-    .map(s => new Date(s.startedAt!).getTime());
-
-  if (allStarts.length === 0) return steps.map(s => ({ ...s, cumulativeTime: 0, requiresExpand: false }));
-
-  const analysisStart = Math.min(...allStarts);
-
-  return steps.map(step => {
-    let cumulativeTime = 0;
-
-    if (step.completedAt) {
-      cumulativeTime = new Date(step.completedAt).getTime() - analysisStart;
-    } else if (step.startedAt) {
-      cumulativeTime = new Date(step.startedAt).getTime() - analysisStart;
+    if (step.parentStepId) {
+      const parent = nodeMap.get(step.parentStepId);
+      if (parent) {
+        parent.children.push(node);
+      } else {
+        // Orphaned step - add to root
+        roots.push(node);
+      }
+    } else {
+      // Root step
+      roots.push(node);
     }
-
-    return {
-      ...step,
-      cumulativeTime,
-      requiresExpand: false,
-    };
   });
+
+  // Sort children by sequence number
+  const sortChildren = (node: StepNode) => {
+    node.children.sort((a, b) => a.step.sequence - b.step.sequence);
+    node.children.forEach(sortChildren);
+  };
+
+  roots.forEach(sortChildren);
+
+  // Sort roots by sequence number as well
+  roots.sort((a, b) => a.step.sequence - b.step.sequence);
+
+  return roots;
 }
 
 /**
- * Identify slow steps and mark those requiring expand
+ * Get status icon
  */
-function identifySlowSteps(steps: EnrichedStep[]): EnrichedStep[] {
-  const slowThreshold = 10000;
-
-  const sortedByDuration = [...steps]
-    .filter(s => s.duration !== undefined && s.duration > 0)
-    .sort((a, b) => (b.duration ?? 0) - (a.duration ?? 0))
-    .slice(0, 3);
-
-  return steps.map(step => {
-    const isFailed = step.status === 'failed';
-    const isSlow = (step.duration ?? 0) > slowThreshold;
-    const slowestIndex = sortedByDuration.findIndex(s => s.step === step.step);
-    const isTopSlowest = slowestIndex !== -1;
-
-    let expandReason: 'failed' | 'slow' | 'top_slowest' | undefined;
-    if (isFailed) expandReason = 'failed';
-    else if (isSlow) expandReason = 'slow';
-    else if (isTopSlowest) expandReason = 'top_slowest';
-
-    return {
-      ...step,
-      requiresExpand: isFailed || isSlow || isTopSlowest,
-      expandReason,
-      isTopSlowest,
-      slowestRank: isTopSlowest ? slowestIndex + 1 : undefined,
-    };
-  });
-}
-
-/**
- * Parse execution steps into timeline phases
- */
-function parseExecutionSteps(steps: ExecutionStep[]): TimelinePhase[] {
-  const enrichedSteps = identifySlowSteps(enrichStepsWithCumulativeTime(steps));
-  const phases: TimelinePhase[] = [];
-
-  // Phase 1: Request Received
-  const requestStep = enrichedSteps.find(s => s.step === 'request_received');
-  if (requestStep) {
-    phases.push(createPhase('request', 'Request Received', [requestStep]));
-  }
-
-  // Phase 2: Whitelist Check
-  const whitelistSteps = enrichedSteps.filter(s =>
-    s.step.includes('whitelist_check')
-  );
-  if (whitelistSteps.length > 0) {
-    phases.push(createPhase('whitelist', 'Whitelist Check', whitelistSteps));
-  }
-
-  // Phase 3: Content Risk Analysis
-  const contentRiskSteps = enrichedSteps.filter(s =>
-    s.step.includes('content_risk_analysis')
-  );
-  if (contentRiskSteps.length > 0) {
-    phases.push(createPhase('content_risk', 'Content Risk Analysis', contentRiskSteps));
-  }
-
-  // Phase 4: Config Loading
-  const configSteps = enrichedSteps.filter(s =>
-    s.step.includes('config_loading')
-  );
-  if (configSteps.length > 0) {
-    phases.push(createPhase('config', 'Configuration Loading', configSteps));
-  }
-
-  // Phase 5: Strategy Execution (PARALLEL - contains analyzers)
-  const analyzerSteps = enrichedSteps.filter(s => s.step.startsWith('analyzer_'));
-  const strategySteps = enrichedSteps.filter(s =>
-    s.step.includes('strategy_execution') ||
-    s.step.includes('native_execution') ||
-    s.step.includes('hybrid_execution') ||
-    s.step.includes('ai_execution')
-  );
-
-  if (strategySteps.length > 0 || analyzerSteps.length > 0) {
-    const allStrategySteps = [...strategySteps, ...analyzerSteps];
-    const phase = createPhase('strategy', 'Strategy Execution', allStrategySteps);
-    phase.isParallel = analyzerSteps.length > 0;
-    phases.push(phase);
-  }
-
-  // Phase 6: Email Alert Check
-  const emailAlertSteps = enrichedSteps.filter(s =>
-    s.step.includes('email_alert')
-  );
-  if (emailAlertSteps.length > 0) {
-    phases.push(createPhase('email_alert', 'Email Alert Check', emailAlertSteps));
-  }
-
-  // Phase 7: Response Sent
-  const responseStep = enrichedSteps.find(s => s.step === 'response_sent');
-  if (responseStep) {
-    phases.push(createPhase('response', 'Response Sent', [responseStep]));
-  }
-
-  return phases;
-}
-
-/**
- * Get status icon based on status
- */
-function getStatusIcon(status: PhaseStatus) {
+function getStatusIcon(status?: string) {
   switch (status) {
     case 'completed':
       return <CheckCircle className="w-4 h-4 text-green-600" />;
@@ -229,7 +70,7 @@ function getStatusIcon(status: PhaseStatus) {
       return <XCircle className="w-4 h-4 text-red-600" />;
     case 'skipped':
       return <Clock className="w-4 h-4 text-gray-400" />;
-    case 'in_progress':
+    case 'started':
       return <Clock className="w-4 h-4 text-yellow-600" />;
     default:
       return <Clock className="w-4 h-4 text-gray-400" />;
@@ -239,7 +80,7 @@ function getStatusIcon(status: PhaseStatus) {
 /**
  * Get status color classes
  */
-function getStatusColor(status: PhaseStatus): string {
+function getStatusColor(status?: string): string {
   switch (status) {
     case 'completed':
       return 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200';
@@ -247,30 +88,11 @@ function getStatusColor(status: PhaseStatus): string {
       return 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200';
     case 'skipped':
       return 'bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-200';
-    case 'in_progress':
+    case 'started':
       return 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200';
     default:
       return 'bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-200';
   }
-}
-
-/**
- * Get expand button label
- */
-function getExpandButtonLabel(isExpanded: boolean): string {
-  if (isExpanded) return 'Collapse';
-  return 'Expand';
-}
-
-/**
- * Get expand button color
- */
-function getExpandButtonColor(step: EnrichedStep): string {
-  if (step.expandReason === 'failed') return 'bg-red-100 text-red-700 hover:bg-red-200 dark:bg-red-900 dark:text-red-200';
-  if (step.expandReason === 'slow') return 'bg-yellow-100 text-yellow-700 hover:bg-yellow-200 dark:bg-yellow-900 dark:text-yellow-200';
-  if (step.expandReason === 'top_slowest') return 'bg-blue-100 text-blue-700 hover:bg-blue-200 dark:bg-blue-900 dark:text-blue-200';
-
-  return 'bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300';
 }
 
 /**
@@ -279,30 +101,7 @@ function getExpandButtonColor(step: EnrichedStep): string {
 function formatStepName(stepName: string): string {
   return stepName
     .replace(/_/g, ' ')
-    .replace(/\b\w/g, l => l.toUpperCase())
-    .replace(/^Analyzer /, '');
-}
-
-/**
- * Render context tooltip content
- */
-function renderContextTooltip(context?: Record<string, unknown>): string | null {
-  if (!context || Object.keys(context).length === 0) return null;
-
-  const entries = Object.entries(context)
-    .filter(([_, value]) => value !== undefined && value !== null)
-    .slice(0, 5);
-
-  if (entries.length === 0) return null;
-
-  return entries
-    .map(([key, value]) => {
-      const displayValue = typeof value === 'object'
-        ? JSON.stringify(value).substring(0, 30) + '...'
-        : String(value).substring(0, 30);
-      return `${key}: ${displayValue}`;
-    })
-    .join(' | ');
+    .replace(/\b\w/g, (l) => l.toUpperCase());
 }
 
 interface ExecutionStepsTimelineProps {
@@ -310,37 +109,205 @@ interface ExecutionStepsTimelineProps {
 }
 
 export function ExecutionStepsTimeline({ steps }: ExecutionStepsTimelineProps) {
-  const [expandedPhases, setExpandedPhases] = useState<Set<string>>(new Set());
   const [expandedSteps, setExpandedSteps] = useState<Set<string>>(new Set());
+  const [showLogs, setShowLogs] = useState<Set<string>>(new Set());
 
-  const phases = useMemo(() => parseExecutionSteps(steps), [steps]);
-  const totalTime = useMemo(() => calculateTotalTime(steps), [steps]);
+  const stepTree = useMemo(() => buildStepTree(steps), [steps]);
 
-  const togglePhase = (phaseId: string) => {
-    setExpandedPhases(prev => {
+  const toggleStep = (stepId: string) => {
+    setExpandedSteps((prev) => {
       const next = new Set(prev);
-      if (next.has(phaseId)) {
-        next.delete(phaseId);
+      if (next.has(stepId)) {
+        next.delete(stepId);
       } else {
-        next.add(phaseId);
+        next.add(stepId);
       }
       return next;
     });
   };
 
-  const toggleStep = (stepName: string) => {
-    setExpandedSteps(prev => {
+  const toggleLogs = (stepId: string) => {
+    setShowLogs((prev) => {
       const next = new Set(prev);
-      if (next.has(stepName)) {
-        next.delete(stepName);
+      if (next.has(stepId)) {
+        next.delete(stepId);
       } else {
-        next.add(stepName);
+        next.add(stepId);
       }
       return next;
     });
   };
 
-  if (phases.length === 0) {
+  /**
+   * Recursively render step node with children
+   */
+  const renderStepNode = (node: StepNode, depth: number = 0): JSX.Element => {
+    const { step } = node;
+    const isExpanded = expandedSteps.has(step.stepId);
+    const showingLogs = showLogs.has(step.stepId);
+    const hasChildren = node.children.length > 0;
+    const hasLogs = step.logs && step.logs.length > 0;
+    const isParallel = step.isParallel;
+
+    const indentPx = depth * 24;
+
+    return (
+      <div key={step.stepId} style={{ marginLeft: `${indentPx}px` }}>
+        {/* Step header */}
+        <div className={`border-l-2 pl-3 py-2 ${
+          step.status === 'failed'
+            ? 'border-red-400 bg-red-50 dark:bg-red-950'
+            : step.status === 'completed'
+            ? 'border-green-400 bg-green-50 dark:bg-green-950'
+            : 'border-gray-300 dark:border-gray-700'
+        }`}>
+          <div className="flex items-start gap-2">
+            {/* Expand button for children */}
+            {hasChildren && (
+              <button
+                onClick={() => toggleStep(step.stepId)}
+                className="mt-0.5 hover:bg-gray-200 dark:hover:bg-gray-800 rounded p-0.5"
+              >
+                {isExpanded ? (
+                  <ChevronDown className="w-4 h-4" />
+                ) : (
+                  <ChevronRight className="w-4 h-4" />
+                )}
+              </button>
+            )}
+
+            {/* Status icon */}
+            <div className="mt-0.5">{getStatusIcon(step.status)}</div>
+
+            {/* Step info */}
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="font-medium text-sm">{formatStepName(step.step)}</span>
+
+                {/* Status badge */}
+                {step.status && (
+                  <Badge className={`text-xs ${getStatusColor(step.status)}`}>
+                    {step.status}
+                  </Badge>
+                )}
+
+                {/* Parallel indicator */}
+                {isParallel && (
+                  <Badge className="bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-200 text-xs">
+                    <Zap className="w-3 h-3 mr-1" />
+                    Parallel
+                  </Badge>
+                )}
+
+                {/* Source component */}
+                {step.source?.component && (
+                  <Badge variant="outline" className="text-xs">
+                    {step.source.component}
+                  </Badge>
+                )}
+
+                {/* Duration */}
+                {step.duration !== undefined && (
+                  <span className="text-xs text-muted-foreground">
+                    {formatDuration(step.duration)}
+                  </span>
+                )}
+
+                {/* Logs indicator */}
+                {hasLogs && (
+                  <button
+                    onClick={() => toggleLogs(step.stepId)}
+                    className="text-xs px-2 py-1 rounded bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700"
+                  >
+                    {showingLogs ? 'Hide' : 'View'} Logs ({step.logs.length})
+                  </button>
+                )}
+              </div>
+
+              {/* Source file */}
+              {step.source?.file && (
+                <div className="text-xs text-muted-foreground mt-1">
+                  {step.source.file}
+                  {step.source.method && ` → ${step.source.method}()`}
+                  {step.source.line && `:${step.source.line}`}
+                </div>
+              )}
+
+              {/* Error message */}
+              {step.error && (
+                <div className="mt-2 p-2 bg-red-100 dark:bg-red-950 rounded text-sm">
+                  <div className="flex items-start gap-2">
+                    <AlertCircle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+                    <div className="flex-1">
+                      <div className="font-medium text-red-900 dark:text-red-200">Error:</div>
+                      <div className="text-red-800 dark:text-red-300 mt-1">{step.error}</div>
+                    </div>
+                  </div>
+
+                  {step.stackTrace && (
+                    <details className="mt-2">
+                      <summary className="cursor-pointer text-xs text-red-700 dark:text-red-400">
+                        Stack Trace
+                      </summary>
+                      <pre className="mt-1 text-xs overflow-x-auto bg-red-50 dark:bg-red-900 p-2 rounded">
+                        {step.stackTrace}
+                      </pre>
+                    </details>
+                  )}
+                </div>
+              )}
+
+              {/* Context metadata */}
+              {step.context && Object.keys(step.context).length > 0 && (
+                <details className="mt-2">
+                  <summary className="cursor-pointer text-xs text-muted-foreground">
+                    Context ({Object.keys(step.context).length} fields)
+                  </summary>
+                  <pre className="mt-1 text-xs overflow-x-auto bg-gray-100 dark:bg-gray-900 p-2 rounded">
+                    {JSON.stringify(step.context, null, 2)}
+                  </pre>
+                </details>
+              )}
+
+              {/* Logs viewer */}
+              {showingLogs && hasLogs && (
+                <div className="mt-3 p-3 bg-gray-50 dark:bg-gray-900 rounded border border-gray-200 dark:border-gray-800">
+                  <LogViewer logs={step.logs} />
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Render children */}
+        {isExpanded && hasChildren && (
+          <div className={isParallel ? 'parallel-group' : ''}>
+            {isParallel && (
+              <div className="ml-6 mt-2 mb-2 border-2 border-dashed border-blue-300 dark:border-blue-700 rounded-lg p-3 bg-blue-50 dark:bg-blue-950">
+                <div className="flex items-center gap-2 mb-3">
+                  <Zap className="w-4 h-4 text-blue-600" />
+                  <span className="text-sm font-medium text-blue-900 dark:text-blue-200">
+                    Parallel Execution Group ({node.children.length} concurrent operations)
+                  </span>
+                </div>
+                <div className="space-y-2">
+                  {node.children.map((child) => renderStepNode(child, 0))}
+                </div>
+              </div>
+            )}
+
+            {!isParallel && (
+              <div className="space-y-1 mt-1">
+                {node.children.map((child) => renderStepNode(child, depth + 1))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  if (stepTree.length === 0) {
     return (
       <div className="text-sm text-muted-foreground">
         No execution steps available
@@ -348,261 +315,24 @@ export function ExecutionStepsTimeline({ steps }: ExecutionStepsTimelineProps) {
     );
   }
 
+  // Total duration is the root "analysis_start" step duration (encompasses entire analysis)
+  const analysisRoot = stepTree.find((node) => node.step.step === 'analysis_start');
+  const totalDuration = analysisRoot?.step.duration || 0;
+
   return (
-    <div className="space-y-2">
-      {phases.map((phase, phaseIndex) => {
-        const isExpanded = expandedPhases.has(phase.id);
+    <div className="space-y-4">
+      <Card className="p-4">
+        <div className="space-y-2">
+          {stepTree.map((node) => renderStepNode(node, 0))}
+        </div>
+      </Card>
 
-        return (
-          <div key={phase.id} className="relative">
-            {/* Vertical connector line */}
-            {phaseIndex < phases.length - 1 && (
-              <div className="absolute left-3 top-12 bottom-0 w-0.5 bg-gray-300 dark:bg-gray-700" />
-            )}
-
-            <Card className="p-4">
-              <div className="flex items-start justify-between">
-                <div className="flex items-start gap-3 flex-1">
-                  <div className="mt-0.5">{getStatusIcon(phase.status)}</div>
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2 mb-1">
-                      <h4 className="font-medium text-sm">{phase.name}</h4>
-                      <Badge className={getStatusColor(phase.status)}>
-                        {phase.status}
-                      </Badge>
-                      {phase.requiresExpand && (
-                        <Badge className="bg-orange-100 text-orange-700 dark:bg-orange-900 dark:text-orange-200">
-                          <AlertCircle className="w-3 h-3 mr-1" />
-                          Review Required
-                        </Badge>
-                      )}
-                    </div>
-                    <div className="text-xs text-muted-foreground">
-                      {phase.duration !== undefined && (
-                        <>
-                          Duration: {formatDuration(phase.duration)}
-                          {phase.cumulativeTime !== undefined && (
-                            <> | Cumulative: {formatDuration(phase.cumulativeTime)}</>
-                          )}
-                        </>
-                      )}
-                    </div>
-                  </div>
-                </div>
-
-                {phase.steps.length > 1 && (
-                  <button
-                    onClick={() => togglePhase(phase.id)}
-                    className="flex items-center gap-1 text-xs px-2 py-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800"
-                  >
-                    {isExpanded ? (
-                      <>
-                        <ChevronDown className="w-3 h-3" />
-                        Collapse
-                      </>
-                    ) : (
-                      <>
-                        <ChevronRight className="w-3 h-3" />
-                        Expand
-                      </>
-                    )}
-                  </button>
-                )}
-              </div>
-
-              {/* Expanded phase details */}
-              {isExpanded && (
-                <div className="mt-4 space-y-3">
-                  {/* Sort all steps by startedAt timestamp, then group consecutive analyzer steps */}
-                  {(() => {
-                    const allSteps = [...phase.steps];
-                    allSteps.sort((a, b) => {
-                      const timeA = a.startedAt ? new Date(a.startedAt).getTime() : 0;
-                      const timeB = b.startedAt ? new Date(b.startedAt).getTime() : 0;
-                      return timeA - timeB;
-                    });
-
-                    // Group consecutive analyzer steps for parallel box
-                    const grouped: Array<EnrichedStep | EnrichedStep[]> = [];
-                    let currentAnalyzerGroup: EnrichedStep[] = [];
-
-                    allSteps.forEach(step => {
-                      if (step.step.startsWith('analyzer_')) {
-                        currentAnalyzerGroup.push(step);
-                      } else {
-                        if (currentAnalyzerGroup.length > 0) {
-                          grouped.push(currentAnalyzerGroup);
-                          currentAnalyzerGroup = [];
-                        }
-                        grouped.push(step);
-                      }
-                    });
-
-                    if (currentAnalyzerGroup.length > 0) {
-                      grouped.push(currentAnalyzerGroup);
-                    }
-
-                    return grouped.map((item, idx) => {
-                      if (Array.isArray(item)) {
-                        // Render parallel analyzer box
-                        return (
-                          <div key={`parallel-${idx}`} className="ml-7 border-2 border-dashed border-blue-300 dark:border-blue-700 rounded-lg p-3 bg-blue-50 dark:bg-blue-950">
-                            <div className="flex items-center gap-2 mb-3">
-                              <Zap className="w-4 h-4 text-blue-600" />
-                              <span className="text-sm font-medium text-blue-900 dark:text-blue-200">
-                                Parallel Execution
-                              </span>
-                            </div>
-
-                            <div className="space-y-3">
-                              {item.map(step => (
-                                <div key={step.step} className="bg-white dark:bg-gray-900 rounded p-2">
-                                  <div className="flex items-start justify-between gap-2">
-                                    <div className="flex-1">
-                                      <Tooltip content={renderContextTooltip(step.context)}>
-                                        <div className="flex items-center gap-2">
-                                          {getStatusIcon(step.status as PhaseStatus)}
-                                          <span className="text-sm">{formatStepName(step.step)}</span>
-                                          {step.status && (
-                                            <Badge className={`text-xs ${getStatusColor(step.status as PhaseStatus)}`}>
-                                              {step.status}
-                                            </Badge>
-                                          )}
-                                        </div>
-                                      </Tooltip>
-                                      <div className="text-xs text-muted-foreground mt-1">
-                                        {step.duration !== undefined && (
-                                          <>
-                                            Duration: {formatDuration(step.duration)}
-                                            {' | '}
-                                            Cumulative: {formatDuration(step.cumulativeTime)}
-                                          </>
-                                        )}
-                                      </div>
-                                    </div>
-
-                                    {step.requiresExpand && (
-                                      <button
-                                        onClick={() => toggleStep(step.step)}
-                                        className={`text-xs px-2 py-1 rounded ${getExpandButtonColor(step)}`}
-                                      >
-                                        {getExpandButtonLabel(expandedSteps.has(step.step))}
-                                      </button>
-                                    )}
-                                  </div>
-
-                                  {/* Expanded step details */}
-                                  {expandedSteps.has(step.step) && (
-                                    <div className="mt-2 p-2 bg-gray-50 dark:bg-gray-900 rounded text-xs">
-                                      {step.error && (
-                                        <div className="mb-2">
-                                          <span className="font-medium text-red-600">Error:</span>
-                                          <p className="mt-1">{step.error}</p>
-                                        </div>
-                                      )}
-                                      {step.stackTrace && (
-                                        <div className="mb-2">
-                                          <span className="font-medium">Stack Trace:</span>
-                                          <pre className="mt-1 overflow-x-auto text-xs">{step.stackTrace}</pre>
-                                        </div>
-                                      )}
-                                      {step.context && Object.keys(step.context).length > 0 && (
-                                        <div>
-                                          <span className="font-medium">Context:</span>
-                                          <pre className="mt-1 overflow-x-auto">{JSON.stringify(step.context, null, 2)}</pre>
-                                        </div>
-                                      )}
-                                    </div>
-                                  )}
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        );
-                      } else {
-                        // Render regular non-analyzer step
-                        const step = item;
-                        return (
-                          <div key={step.step} className="ml-7 border-l-2 border-gray-200 dark:border-gray-700 pl-4">
-                            <div className="flex items-start justify-between gap-2">
-                              <div className="flex-1">
-                                <Tooltip content={renderContextTooltip(step.context)}>
-                                  <div className="flex items-center gap-2">
-                                    <span className="text-sm">{formatStepName(step.step)}</span>
-                                    {step.status && (
-                                      <Badge className={`text-xs ${getStatusColor(step.status as PhaseStatus)}`}>
-                                        {step.status}
-                                      </Badge>
-                                    )}
-                                  </div>
-                                </Tooltip>
-                                <div className="text-xs text-muted-foreground mt-1">
-                                  {step.duration !== undefined && (
-                                    <>
-                                      Duration: {formatDuration(step.duration)}
-                                      {' | '}
-                                      Cumulative: {formatDuration(step.cumulativeTime)}
-                                    </>
-                                  )}
-                                </div>
-                              </div>
-
-                              {step.requiresExpand && (
-                                <button
-                                  onClick={() => toggleStep(step.step)}
-                                  className={`text-xs px-2 py-1 rounded ${getExpandButtonColor(step)}`}
-                                >
-                                  {getExpandButtonLabel(expandedSteps.has(step.step))}
-                                </button>
-                              )}
-                            </div>
-
-                            {/* Expanded step details */}
-                            {expandedSteps.has(step.step) && (
-                              <div className="mt-2 p-2 bg-gray-50 dark:bg-gray-900 rounded text-xs">
-                                {step.error && (
-                                  <div className="mb-2">
-                                    <span className="font-medium text-red-600">Error:</span>
-                                    <p className="mt-1">{step.error}</p>
-                                  </div>
-                                )}
-                                {step.stackTrace && (
-                                  <div className="mb-2">
-                                    <span className="font-medium">Stack Trace:</span>
-                                    <pre className="mt-1 overflow-x-auto text-xs">{step.stackTrace}</pre>
-                                  </div>
-                                )}
-                                {step.context && Object.keys(step.context).length > 0 && (
-                                  <div>
-                                    <span className="font-medium">Context:</span>
-                                    <pre className="mt-1 overflow-x-auto">{JSON.stringify(step.context, null, 2)}</pre>
-                                  </div>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        );
-                      }
-                    });
-                  })()}
-                </div>
-              )}
-            </Card>
-
-            {/* Arrow connector */}
-            {phaseIndex < phases.length - 1 && (
-              <div className="flex justify-center my-1">
-                <ArrowDown className="w-4 h-4 text-gray-400" />
-              </div>
-            )}
-          </div>
-        );
-      })}
-
-      {/* Total time */}
-      <div className="text-sm text-muted-foreground text-right mt-4">
-        Total Execution Time: <span className="font-medium">{formatDuration(totalTime)}</span>
-      </div>
+      {/* Total execution time */}
+      {totalDuration > 0 && (
+        <div className="text-sm text-muted-foreground text-right">
+          Total Execution Time: <span className="font-medium">{formatDuration(totalDuration)}</span>
+        </div>
+      )}
     </div>
   );
 }

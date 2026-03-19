@@ -6,6 +6,7 @@ import type { AnalysisSignal } from '../../models/analysis-result.js';
 import type { NormalizedInput } from '../../models/input.js';
 import type { AppConfig } from '../../../config/app.config.js';
 import { getConfig } from '../../../config/index.js';
+import type { StepManager } from '../../execution/execution-strategy.js';
 
 /**
  * Analyzer interface that all analyzers must implement
@@ -14,9 +15,10 @@ export interface IAnalyzer {
   /**
    * Performs analysis on the input and returns signals
    * @param input - Normalized input to analyze
+   * @param stepManager - Optional step manager for hierarchical execution tracking
    * @returns Array of analysis signals
    */
-  analyze(input: NormalizedInput): Promise<AnalysisSignal[]>;
+  analyze(input: NormalizedInput, stepManager?: StepManager): Promise<AnalysisSignal[]>;
 
   /**
    * Gets the name of this analyzer
@@ -62,8 +64,10 @@ export abstract class BaseAnalyzer implements IAnalyzer {
   /**
    * Performs analysis on the input
    * Must be implemented by subclasses
+   * @param input - Normalized input to analyze
+   * @param stepManager - Optional step manager for hierarchical execution tracking
    */
-  abstract analyze(input: NormalizedInput): Promise<AnalysisSignal[]>;
+  abstract analyze(input: NormalizedInput, stepManager?: StepManager): Promise<AnalysisSignal[]>;
 
   /**
    * Gets the analyzer name

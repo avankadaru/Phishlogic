@@ -5,138 +5,121 @@
  * Fast, deterministic, no AI costs.
  *
  * Task Independent: Works with any set of analyzers
+ *
+ * IMPORTANT: This strategy receives pre-filtered analyzers from the engine
+ * and returns ONLY signals (no verdict calculation).
+ * Verdict calculation is done at the engine level after strategy completes.
  */
 
 import { BaseExecutionStrategy, ExecutionContext, ExecutionResult } from '../execution-strategy.js';
 import type { AnalysisResult } from '../../models/analysis-result.js';
-import { getAnalyzerRegistry } from '../../engine/analyzer-registry.js';
-import { getVerdictService } from '../../services/verdict.service.js';
-import { getLogger } from '../../../infrastructure/logging/index.js';
+import { getLogger, setStepContext, clearStepContext } from '../../../infrastructure/logging/index.js';
 
 const logger = getLogger();
 
 export class NativeExecutionStrategy extends BaseExecutionStrategy {
   async execute(context: ExecutionContext): Promise<ExecutionResult> {
-    this.addExecutionStep(context, 'native_execution_started', 'started');
+    const stepManager = context.stepManager!;
 
-    // Get analyzers based on whitelist entry and content profile (content-based filtering)
-    const analyzerRegistry = getAnalyzerRegistry();
-
-    // Require riskProfile - if not provided, fail fast
-    if (!context.riskProfile) {
-      throw new Error('Content risk profile is required for analyzer filtering');
-    }
-
-    this.addExecutionStep(context, 'analyzer_filtering_completed', 'completed');
-
-    // Get filtered analyzers with detailed reasons
-    const filteringResult = analyzerRegistry.getFilteredAnalyzersWithReasons(
-      context.whitelistEntry,
-      context.riskProfile
-    );
-
-    let analyzers = filteringResult.analyzers;
-
-    // Add analyzer filtering step to execution context
-    this.addExecutionStep(context, 'analyzer_filtering_completed', 'completed', {
-      totalAnalyzersAvailable: analyzerRegistry.getAnalyzers().length,
-      analyzersSelected: filteringResult.analyzers.length,
-      analyzersSkipped: filteringResult.skipped.length,
-      selectedAnalyzers: filteringResult.reasons.map((r) => ({
-        analyzer: r.analyzerName,
-        reason: r.reason,
-        triggeredBy: r.triggeredBy,
-      })),
-      skippedAnalyzers: filteringResult.skipped.map((s) => ({
-        analyzer: s.analyzerName,
-        reason: s.reason,
-      })),
+    // Root step - START
+    const rootStepId = stepManager.startStep({
+      name: 'native_execution',
+      source: {
+        file: 'native.strategy.ts',
+        component: 'NativeExecutionStrategy',
+        method: 'execute',
+      },
     });
 
-    // If no analyzers to run (e.g., trusted email with no content), return safe verdict
-    if (analyzers.length === 0) {
-      const reason = context.whitelistEntry
-        ? `Trusted sender with no risk indicators detected.`
-        : `No content requiring analysis detected.`;
+    try {
+      // Set step context for log capture
+      setStepContext(rootStepId, (entry) => stepManager.captureLog(entry));
 
-      const duration = 0;
-      this.addExecutionStep(context, 'native_execution_completed', 'completed', { duration });
+      logger.info({
+        msg: 'Starting native execution strategy',
+        analysisId: context.analysisId,
+      });
 
-      return {
-        result: {
-          verdict: 'Safe',
-          confidence: 1.0,
-          score: 0.0,
-          alertLevel: 'none',
-          redFlags: [],
-          reasoning: reason,
-          actions: [],
-          signals: [],
-          metadata: {
-            duration,
-            timestamp: new Date(),
-            analyzersRun: [],
-            analysisId: context.analysisId,
-            executionSteps: context.executionSteps,
-            contentRisk: {
-              hasLinks: context.riskProfile.hasLinks,
-              hasAttachments: context.riskProfile.hasAttachments,
-              hasUrgencyLanguage: context.riskProfile.hasUrgencyLanguage,
-              overallRiskScore: context.riskProfile.overallRiskScore,
-            },
-            riskScore: context.riskProfile.overallRiskScore,
-          },
-        },
-        actualMode: 'native',
-        aiMetadata: undefined,
-      };
-    }
-
-    // Filter analyzers based on integration configuration if analyzerOptions is provided
-    if (context.analyzerOptions && Object.keys(context.analyzerOptions).length > 0) {
-      const configuredAnalyzerNames = Object.keys(context.analyzerOptions).map((name) =>
-        name.toLowerCase()
-      );
-      analyzers = analyzers.filter((analyzer) =>
-        configuredAnalyzerNames.includes(analyzer.getName().toLowerCase())
-      );
+      // Use pre-filtered analyzers from context (filtering done by engine)
+      const analyzers = context.analyzers || [];
 
       logger.debug({
-        msg: 'Filtered analyzers based on integration configuration',
+        msg: 'Received pre-filtered analyzers from engine',
         analysisId: context.analysisId,
-        configuredAnalyzers: Object.keys(context.analyzerOptions),
-        filteredAnalyzers: analyzers.map((a) => a.getName()),
-        filteredCount: analyzers.length,
+        analyzerCount: analyzers.length,
+        analyzersToRun: analyzers.map((a: any) => a.getName()),
       });
-    }
 
-    // Log filtering decisions for audit trail
-    logger.info({
-      msg: 'Running content-based filtered analysis',
-      analysisId: context.analysisId,
-      isTrusted: context.whitelistEntry?.isTrusted ?? false,
-      riskScore: context.riskProfile.overallRiskScore,
-      contentProfile: {
-        hasLinks: context.riskProfile.hasLinks,
-        hasAttachments: context.riskProfile.hasAttachments,
-        hasImages: context.riskProfile.hasImages,
-        hasQRCodes: context.riskProfile.hasQRCodes,
-      },
-      analyzerCount: analyzers.length,
-      analyzersToRun: analyzers.map((a) => a.getName()),
-    });
+      // If no analyzers to run, return empty signals (verdict will be calculated by engine)
+      if (analyzers.length === 0) {
+        logger.info({
+          msg: 'No analyzers to run',
+          analysisId: context.analysisId,
+        });
 
-    // Run all analyzers in parallel (Promise.allSettled for independence)
-    const { result: analyzerResults, durationMs } = await this.measureTime(async () => {
-      return await Promise.allSettled(
-        analyzers.map(async (analyzer) => {
-          const analyzerStartTime = Date.now();
+        stepManager.completeStep(rootStepId, {
+          signalCount: 0,
+          analyzersRun: 0,
+        });
+
+        // Return signals only - engine will calculate verdict
+        return {
+          result: {
+            verdict: 'Safe', // Placeholder - will be calculated by engine
+            confidence: 0,
+            score: 0,
+            alertLevel: 'none',
+            redFlags: [],
+            reasoning: '',
+            actions: [],
+            signals: [],
+            metadata: {
+              duration: 0, // Placeholder - will be overridden by engine with actual duration
+              timestamp: new Date(),
+              analyzersRun: [],
+              analysisId: context.analysisId,
+              executionSteps: context.executionSteps,
+            },
+          },
+          actualMode: 'native',
+        };
+      }
+
+      // Analyzer execution - parallel group - START
+      const analyzerGroupId = stepManager.startParallelGroup('analyzer_parallel_execution');
+      setStepContext(analyzerGroupId, (entry) => stepManager.captureLog(entry));
+
+      logger.info({
+        msg: 'Starting parallel analyzer execution',
+        analysisId: context.analysisId,
+        analyzerCount: analyzers.length,
+      });
+
+      const analyzerResults = await Promise.allSettled(
+        analyzers.map(async (analyzer: any) => {
+          // Each analyzer gets its own step - START
+          const analyzerStepId = stepManager.startStep({
+            name: `analyzer_${analyzer.getName()}`,
+            source: {
+              file: analyzer.constructor.name + '.ts',
+              component: analyzer.getName(),
+            },
+            parallelGroup: analyzerGroupId,
+          });
+
+          // Set step context for this analyzer's logs
+          setStepContext(analyzerStepId, (entry) => stepManager.captureLog(entry));
 
           try {
+            logger.info({
+              msg: `Starting analyzer ${analyzer.getName()}`,
+              analysisId: context.analysisId,
+              analyzer: analyzer.getName(),
+            });
+
             // Configure analyzer-specific options if available (case-insensitive lookup)
             const analyzerName = analyzer.getName();
             if (context.analyzerOptions && 'setOptions' in analyzer) {
-              // Find options by case-insensitive name match
               const optionsKey = Object.keys(context.analyzerOptions).find(
                 (key) => key.toLowerCase() === analyzerName.toLowerCase()
               );
@@ -151,82 +134,109 @@ export class NativeExecutionStrategy extends BaseExecutionStrategy {
               riskProfile: context.riskProfile,
             };
 
-            const signals = await analyzer.analyze(inputWithRiskProfile);
-            const analyzerDuration = Date.now() - analyzerStartTime;
+            // Pass stepManager to analyzer for substep tracking
+            const signals = await analyzer.analyze(inputWithRiskProfile, stepManager);
 
             // Track costs based on analyzer type
             this.trackAnalyzerCosts(context, analyzer.getName(), signals);
 
-            this.addExecutionStep(context, `analyzer_${analyzer.getName()}_completed`, 'completed', {
-              duration: analyzerDuration,
+            logger.info({
+              msg: `Analyzer ${analyzer.getName()} completed`,
+              analysisId: context.analysisId,
+              analyzer: analyzer.getName(),
+              signalCount: signals.length,
+            });
+
+            // Each analyzer step - END
+            stepManager.completeStep(analyzerStepId, {
               signalCount: signals.length,
             });
 
             return { name: analyzer.getName(), signals };
           } catch (error) {
-            const analyzerDuration = Date.now() - analyzerStartTime;
-
-            this.addExecutionStep(context, `analyzer_${analyzer.getName()}_failed`, 'failed', {
-              duration: analyzerDuration,
+            logger.error({
+              msg: `Analyzer ${analyzer.getName()} failed`,
+              analysisId: context.analysisId,
+              analyzer: analyzer.getName(),
               error: error instanceof Error ? error.message : String(error),
             });
 
-            // Return empty signals for failed analyzer (graceful degradation)
+            stepManager.failStep(analyzerStepId, {
+              error: error instanceof Error ? error.message : String(error),
+              stackTrace: error instanceof Error ? error.stack : undefined,
+            });
+
             return { name: analyzer.getName(), signals: [] };
           }
         })
       );
-    });
 
-    // Collect all signals from successful analyzers
-    const allSignals: any[] = [];
-    const analyzersRun: string[] = [];
+      // Parallel group - END
+      stepManager.completeStep(analyzerGroupId, {
+        analyzersRun: analyzerResults.length,
+      });
 
-    for (const result of analyzerResults) {
-      if (result.status === 'fulfilled') {
-        allSignals.push(...result.value.signals);
-        analyzersRun.push(result.value.name);
+      // Collect all signals
+      const allSignals: any[] = [];
+      const analyzersRun: string[] = [];
+
+      for (const result of analyzerResults) {
+        if (result.status === 'fulfilled') {
+          allSignals.push(...result.value.signals);
+          analyzersRun.push(result.value.name);
+        }
       }
-    }
 
-    // Calculate verdict from signals
-    const analyzerWeights = analyzerRegistry.getAnalyzerWeights();
-    const verdictService = getVerdictService();
-    const verdict = verdictService.calculateVerdict(allSignals, analyzerWeights);
-
-    // Build analysis result
-    const analysisResult: AnalysisResult = {
-      verdict: verdict.verdict,
-      confidence: verdict.confidence,
-      score: verdict.score,
-      alertLevel: verdict.alertLevel,
-      redFlags: verdict.redFlags,
-      reasoning: verdict.reasoning,
-      actions: verdict.actions,
-      signals: allSignals,
-      metadata: {
-        duration: durationMs,
-        timestamp: new Date(),
-        analyzersRun,
+      logger.info({
+        msg: 'All analyzers completed, returning signals to engine',
         analysisId: context.analysisId,
-        executionSteps: context.executionSteps,
-      },
-    };
-
-    this.addExecutionStep(context, 'native_execution_completed', 'completed', {
-      duration: durationMs,
-      context: {
-        verdict: verdict.verdict,
-        score: verdict.score,
         signalCount: allSignals.length,
-        analyzerCount: analyzersRun.length,
-      },
-    });
+        analyzersRun: analyzersRun.length,
+      });
 
-    return {
-      result: analysisResult,
-      actualMode: 'native',
-    };
+      // Root step - END
+      stepManager.completeStep(rootStepId, {
+        signalCount: allSignals.length,
+        analyzersRun: analyzersRun.length,
+      });
+
+      // Return signals only - engine will calculate verdict from these signals
+      return {
+        result: {
+          verdict: 'Safe', // Placeholder - will be overwritten by engine
+          confidence: 0,
+          score: 0,
+          alertLevel: 'none',
+          redFlags: [],
+          reasoning: '',
+          actions: [],
+          signals: allSignals,
+          metadata: {
+            duration: 0, // Placeholder - will be overridden by engine with actual duration
+            timestamp: new Date(),
+            analyzersRun,
+            analysisId: context.analysisId,
+            executionSteps: context.executionSteps,
+          },
+        },
+        actualMode: 'native',
+      };
+    } catch (error) {
+      logger.error({
+        msg: 'Native execution strategy failed',
+        analysisId: context.analysisId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+
+      stepManager.failStep(rootStepId, {
+        error: error instanceof Error ? error.message : String(error),
+        stackTrace: error instanceof Error ? error.stack : undefined,
+      });
+
+      throw error;
+    } finally {
+      clearStepContext();
+    }
   }
 
   getName(): string {

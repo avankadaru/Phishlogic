@@ -213,6 +213,17 @@ export interface RedFlag {
   severity: 'low' | 'medium' | 'high' | 'critical';
 }
 
+export interface LogEntry {
+  timestamp: string;
+  level: 'debug' | 'info' | 'warn' | 'error';
+  message: string;
+  metadata?: Record<string, unknown>;
+  source?: {
+    file?: string;
+    line?: number;
+  };
+}
+
 export interface ExecutionStep {
   step: string;
   startedAt?: string;
@@ -223,6 +234,20 @@ export interface ExecutionStep {
   stackTrace?: string;
   errorContext?: Record<string, unknown>;
   context?: Record<string, unknown>;
+  // Hierarchical tracking fields
+  stepId: string;
+  parentStepId?: string;
+  depth: number;
+  sequence: number;
+  source: {
+    file?: string;
+    component?: string;
+    method?: string;
+    line?: number;
+  };
+  logs: LogEntry[];
+  isParallel?: boolean;
+  parallelGroup?: string;
 }
 
 // Enriched threat pattern (matches backend ThreatMetadata)

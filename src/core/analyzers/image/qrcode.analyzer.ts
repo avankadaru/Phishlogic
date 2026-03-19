@@ -8,6 +8,8 @@ import { BaseAnalyzer } from '../base/index.js';
 import type { AnalysisSignal } from '../../models/analysis-result.js';
 import type { NormalizedInput } from '../../models/input.js';
 import { isEmailInput } from '../../models/input.js';
+import type { StepManager } from '../../execution/execution-strategy.js';
+import { setStepContext } from '../../../infrastructure/logging/index.js';
 import * as cheerio from 'cheerio';
 import sharp from 'sharp';
 import jsQR from 'jsqr';
@@ -76,7 +78,7 @@ export class QRCodeAnalyzer extends BaseAnalyzer {
     return !!input.data.parsed.body.html;
   }
 
-  async analyze(input: NormalizedInput): Promise<AnalysisSignal[]> {
+  async analyze(input: NormalizedInput, stepManager?: StepManager): Promise<AnalysisSignal[]> {
     const signals: AnalysisSignal[] = [];
 
     if (!isEmailInput(input)) {
@@ -117,9 +119,10 @@ export class QRCodeAnalyzer extends BaseAnalyzer {
       }
 
       // Try to decode QR codes from each image (expensive jsQR operation)
-      for (const imgSrc of imageSources) {
+      for (let i = 0; i < imageSources.length; i++) {
+        const imgSrc = imageSources[i];
         try {
-          const qrSignals = await this.decodeAndAnalyzeQRCode(imgSrc);
+          const qrSignals = await this.decodeAndAnalyzeQRCode(imgSrc, i + 1, stepManager);
           signals.push(...qrSignals);
         } catch (error) {
           // Failed to decode QR from this image, continue with next
@@ -157,7 +160,7 @@ export class QRCodeAnalyzer extends BaseAnalyzer {
   /**
    * Decode QR code from image and analyze the content
    */
-  private async decodeAndAnalyzeQRCode(imgSrc: string): Promise<AnalysisSignal[]> {
+  private async decodeAndAnalyzeQRCode(imgSrc: string, imageIndex: number, stepManager?: StepManager): Promise<AnalysisSignal[]> {
     const signals: AnalysisSignal[] = [];
 
     // Handle data URLs (base64 embedded images)
@@ -170,6 +173,20 @@ export class QRCodeAnalyzer extends BaseAnalyzer {
       return signals;
     }
 
+    // If stepManager provided, create substep for QR decode operation
+    let qrDecodeStepId: string | undefined;
+    if (stepManager) {
+      qrDecodeStepId = stepManager.startStep({
+        name: `qr_decode_image_${imageIndex}`,
+        source: {
+          file: 'qrcode.analyzer.ts',
+          component: 'QRCodeAnalyzer',
+          method: 'decodeAndAnalyzeQRCode',
+        },
+      });
+      setStepContext(qrDecodeStepId, (entry) => stepManager.captureLog(entry));
+    }
+
     try {
       // Convert image to raw pixel data for jsQR
       const image = sharp(imageBuffer);
@@ -180,6 +197,13 @@ export class QRCodeAnalyzer extends BaseAnalyzer {
       const qrCode = jsQR(new Uint8ClampedArray(data), info.width, info.height);
 
       if (!qrCode || !qrCode.data) {
+        // No QR code found - END substep
+        if (qrDecodeStepId && stepManager) {
+          stepManager.completeStep(qrDecodeStepId, {
+            qrCodeFound: false,
+            imageIndex,
+          });
+        }
         return signals; // No QR code found in this image
       }
 
@@ -207,8 +231,26 @@ export class QRCodeAnalyzer extends BaseAnalyzer {
           );
         }
       }
-    } catch {
+
+      // QR decode substep - END
+      if (qrDecodeStepId && stepManager) {
+        stepManager.completeStep(qrDecodeStepId, {
+          qrCodeFound: true,
+          imageIndex,
+          qrDataLength: qrData.length,
+          containsURL: this.isUrl(qrData),
+          signalsGenerated: signals.length,
+        });
+      }
+    } catch (error) {
       // Failed to decode QR code (image may not contain one)
+      if (qrDecodeStepId && stepManager) {
+        stepManager.completeStep(qrDecodeStepId, {
+          qrCodeFound: false,
+          imageIndex,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
 
     return signals;
