@@ -92,6 +92,9 @@ export interface NormalizedInput {
 
   /** Optional UI timestamp (when user initiated the request) */
   uiTimestamp?: number;
+
+  /** Optional risk profile from pre-scan extractors (for analyzer consumption) */
+  riskProfile?: any; // Import type will be added to avoid circular dependency
 }
 
 /**

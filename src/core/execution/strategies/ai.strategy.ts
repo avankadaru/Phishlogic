@@ -9,6 +9,8 @@
 
 import { BaseExecutionStrategy, ExecutionContext, ExecutionResult } from '../execution-strategy.js';
 import { AIMetadata } from '../../services/analysis-persistence.service.js';
+
+import type { EnhancedContentRiskProfile } from '../../analyzers/risk/content-risk.analyzer.js';
 import { getLogger } from '../../../infrastructure/logging/logger.js';
 
 const logger = getLogger();
@@ -25,7 +27,8 @@ export interface AIService {
       temperature?: number;
       maxTokens?: number;
       timeout?: number;
-    }
+    },
+    riskProfile?: EnhancedContentRiskProfile
   ): Promise<{
     signals: any[];
     metadata: AIMetadata;
@@ -62,7 +65,7 @@ export class AIExecutionStrategy extends BaseExecutionStrategy {
 
       const { result: aiResult, durationMs: aiDuration } = await this.measureTime(async () => {
         return await this.executeWithTimeout(
-          () => this.aiService.executeWithAI(context.input, aiConfig),
+          () => this.aiService.executeWithAI(context.input, aiConfig, context.riskProfile),
           aiTimeout
         );
       });

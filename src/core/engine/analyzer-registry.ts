@@ -14,6 +14,22 @@ import { getConfig } from '../../config/app.config.js';
 const logger = getLogger();
 
 /**
+ * Analyzer filtering result with detailed reasons
+ */
+export interface AnalyzerFilteringResult {
+  analyzers: IAnalyzer[];
+  reasons: Array<{
+    analyzerName: string;
+    reason: string;
+    triggeredBy: string; // Content flag that triggered inclusion
+  }>;
+  skipped: Array<{
+    analyzerName: string;
+    reason: string; // Why it was skipped
+  }>;
+}
+
+/**
  * Global analyzer registry
  */
 class AnalyzerRegistry {
@@ -119,6 +135,213 @@ class AnalyzerRegistry {
 
     // Trusted → conditional filtering based on checkboxes
     return this.filterByContent(allAnalyzers, contentProfile, true, whitelistEntry);
+  }
+
+  /**
+   * Get filtered analyzers WITH detailed reasoning
+   * Shows why each analyzer was included or skipped
+   *
+   * @param whitelistEntry - Whitelist entry (if whitelisted)
+   * @param contentProfile - Content risk profile (ALWAYS required)
+   * @returns Filtering result with analyzers and detailed reasons
+   */
+  getFilteredAnalyzersWithReasons(
+    whitelistEntry: WhitelistEntry | undefined,
+    contentProfile: ContentRiskProfile
+  ): AnalyzerFilteringResult {
+    const allAnalyzers = this.getAnalyzers();
+    const selected: IAnalyzer[] = [];
+    const reasons: Array<{ analyzerName: string; reason: string; triggeredBy: string }> = [];
+    const skipped: Array<{ analyzerName: string; reason: string }> = [];
+
+    const isTrusted = whitelistEntry?.isTrusted || false;
+
+    for (const analyzer of allAnalyzers) {
+      const name = analyzer.getName();
+
+      // Authentication analyzers - only for non-trusted
+      if (['SpfAnalyzer', 'DkimAnalyzer', 'SenderReputationAnalyzer'].includes(name)) {
+        if (!isTrusted) {
+          selected.push(analyzer);
+          reasons.push({
+            analyzerName: name,
+            reason: `${name} required for non-whitelisted sender`,
+            triggeredBy: 'isWhitelisted: false',
+          });
+        } else {
+          skipped.push({
+            analyzerName: name,
+            reason: 'Sender is whitelisted and trusted',
+          });
+        }
+        continue;
+      }
+
+      // Attachment analyzer - content-based
+      if (name === 'AttachmentAnalyzer') {
+        if (contentProfile.hasAttachments) {
+          if (!isTrusted || whitelistEntry?.scanAttachments) {
+            selected.push(analyzer);
+            reasons.push({
+              analyzerName: name,
+              reason: 'Attachments detected in email',
+              triggeredBy: `attachmentCount: ${contentProfile.attachmentCount}`,
+            });
+          } else {
+            skipped.push({
+              analyzerName: name,
+              reason: 'Trusted sender with scanAttachments disabled',
+            });
+          }
+        } else {
+          skipped.push({
+            analyzerName: name,
+            reason: 'No attachments detected in email',
+          });
+        }
+        continue;
+      }
+
+      // Link analyzers - content-based
+      if (name === 'LinkReputationAnalyzer' || name === 'UrlEntropyAnalyzer' || name === 'RedirectAnalyzer') {
+        if (contentProfile.hasLinks) {
+          if (!isTrusted || whitelistEntry?.scanRichContent) {
+            selected.push(analyzer);
+            reasons.push({
+              analyzerName: name,
+              reason: 'Links detected in content',
+              triggeredBy: `linkCount: ${contentProfile.linkCount}`,
+            });
+          } else {
+            skipped.push({
+              analyzerName: name,
+              reason: 'Trusted sender with scanRichContent disabled',
+            });
+          }
+        } else {
+          skipped.push({
+            analyzerName: name,
+            reason: 'No links detected in content',
+          });
+        }
+        continue;
+      }
+
+      // Image analyzer - content-based
+      if (name === 'ImageAnalyzer') {
+        if (contentProfile.hasImages) {
+          if (!isTrusted || whitelistEntry?.scanRichContent) {
+            selected.push(analyzer);
+            reasons.push({
+              analyzerName: name,
+              reason: 'Images detected in content',
+              triggeredBy: `imageCount: ${contentProfile.imageCount}`,
+            });
+          } else {
+            skipped.push({
+              analyzerName: name,
+              reason: 'Trusted sender with scanRichContent disabled',
+            });
+          }
+        } else {
+          skipped.push({
+            analyzerName: name,
+            reason: 'No images detected in content',
+          });
+        }
+        continue;
+      }
+
+      // QR Code analyzer - content-based
+      if (name === 'QRCodeAnalyzer') {
+        if (contentProfile.hasQRCodes) {
+          if (!isTrusted || whitelistEntry?.scanRichContent) {
+            selected.push(analyzer);
+            reasons.push({
+              analyzerName: name,
+              reason: 'QR codes detected in images',
+              triggeredBy: `qrCodeCount: ${contentProfile.qrCodeCount}`,
+            });
+          } else {
+            skipped.push({
+              analyzerName: name,
+              reason: 'Trusted sender with scanRichContent disabled',
+            });
+          }
+        } else {
+          skipped.push({
+            analyzerName: name,
+            reason: 'No QR codes found in content',
+          });
+        }
+        continue;
+      }
+
+      // Form/Button analyzers - content-based
+      if (name === 'FormAnalyzer' || name === 'ButtonAnalyzer') {
+        const hasForms = name === 'FormAnalyzer' && contentProfile.hasForms;
+        const hasLinks = name === 'ButtonAnalyzer' && contentProfile.hasLinks;
+
+        if (hasForms || hasLinks) {
+          if (!isTrusted || whitelistEntry?.scanRichContent) {
+            selected.push(analyzer);
+            reasons.push({
+              analyzerName: name,
+              reason: name === 'FormAnalyzer' ? 'Forms detected in HTML' : 'Buttons/CTAs detected',
+              triggeredBy: name === 'FormAnalyzer' ? 'hasForms: true' : `linkCount: ${contentProfile.linkCount}`,
+            });
+          } else {
+            skipped.push({
+              analyzerName: name,
+              reason: 'Trusted sender with scanRichContent disabled',
+            });
+          }
+        } else {
+          skipped.push({
+            analyzerName: name,
+            reason: name === 'FormAnalyzer' ? 'No forms detected in HTML' : 'No buttons/CTAs detected',
+          });
+        }
+        continue;
+      }
+
+      // Content/Urgency analyzers - run if urgency detected
+      if (name === 'ContentAnalysisAnalyzer' || name === 'EmotionalManipulationAnalyzer') {
+        if (contentProfile.hasUrgencyLanguage) {
+          selected.push(analyzer);
+          reasons.push({
+            analyzerName: name,
+            reason: 'Urgency language detected',
+            triggeredBy: `urgencyScore: ${contentProfile.urgencyScore}`,
+          });
+        } else {
+          skipped.push({
+            analyzerName: name,
+            reason: 'No urgency language detected',
+          });
+        }
+        continue;
+      }
+
+      // Default: include analyzer
+      selected.push(analyzer);
+      reasons.push({
+        analyzerName: name,
+        reason: 'Always-on analyzer',
+        triggeredBy: 'default',
+      });
+    }
+
+    logger.info({
+      msg: 'Analyzer filtering completed with detailed reasons',
+      totalAvailable: allAnalyzers.length,
+      selected: selected.length,
+      skipped: skipped.length,
+      selectedAnalyzers: reasons.map((r) => r.analyzerName),
+      skippedAnalyzers: skipped.map((s) => s.analyzerName),
+    });
+
+    return { analyzers: selected, reasons, skipped };
   }
 
   /**

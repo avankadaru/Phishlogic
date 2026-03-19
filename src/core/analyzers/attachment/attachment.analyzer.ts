@@ -73,6 +73,71 @@ export class AttachmentAnalyzer extends BaseAnalyzer {
     }
 
     const signals: AnalysisSignal[] = [];
+
+    // NEW: Check if attachment metadata already extracted by risk profile
+    if (input.riskProfile?.attachmentMetadata && input.riskProfile.attachmentMetadata.length > 0) {
+      logger.debug({
+        msg: 'Using pre-extracted attachment metadata from risk profile',
+        attachmentCount: input.riskProfile.attachmentMetadata.length,
+      });
+
+      // Generate signals directly from pre-extracted metadata
+      for (const metadata of input.riskProfile.attachmentMetadata) {
+        // Generate signals based on suspicious flag
+        if (metadata.isSuspicious && metadata.suspicionReasons.length > 0) {
+          // Determine severity based on reasons
+          const hasDangerousExt = metadata.suspicionReasons.some(
+            (reason: string) =>
+              reason.includes('Executable') ||
+              reason.includes('Macro-enabled') ||
+              reason.includes('Double extension')
+          );
+
+          if (hasDangerousExt) {
+            signals.push(
+              this.createSignal({
+                signalType: 'attachment_dangerous_type',
+                severity: 'critical',
+                confidence: 0.95,
+                description: `Dangerous attachment detected: ${metadata.filename} (${metadata.suspicionReasons.join(', ')})`,
+                evidence: {
+                  filename: metadata.filename,
+                  mimeType: metadata.mimeType,
+                  extension: metadata.extension,
+                  size: metadata.sizeBytes,
+                  reasons: metadata.suspicionReasons,
+                },
+              })
+            );
+          } else {
+            signals.push(
+              this.createSignal({
+                signalType: 'attachment_suspicious_type',
+                severity: 'high',
+                confidence: 0.8,
+                description: `Suspicious attachment: ${metadata.filename} (${metadata.suspicionReasons.join(', ')})`,
+                evidence: {
+                  filename: metadata.filename,
+                  mimeType: metadata.mimeType,
+                  extension: metadata.extension,
+                  size: metadata.sizeBytes,
+                  reasons: metadata.suspicionReasons,
+                },
+              })
+            );
+          }
+        }
+      }
+
+      logger.debug({
+        msg: 'Attachment analysis complete (using risk profile)',
+        signalsGenerated: signals.length,
+      });
+
+      return signals;
+    }
+
+    // Fallback: Full analysis from input.data.parsed.attachments
     const attachments = input.data.parsed.attachments || [];
 
     if (attachments.length === 0) {
@@ -81,7 +146,7 @@ export class AttachmentAnalyzer extends BaseAnalyzer {
     }
 
     logger.debug({
-      msg: 'Starting attachment analysis',
+      msg: 'Starting attachment analysis (fallback mode)',
       attachmentCount: attachments.length,
     });
 

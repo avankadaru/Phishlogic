@@ -18,6 +18,7 @@ import type { NormalizedInput } from '../models/input.js';
 import { isEmailInput, isUrlInput } from '../models/input.js';
 import type { AnalysisSignal, SignalSeverity } from '../models/analysis-result.js';
 import type { AIMetadata } from './analysis-persistence.service.js';
+import type { EnhancedContentRiskProfile } from '../analyzers/risk/content-risk.analyzer.js';
 import { getLogger } from '../../infrastructure/logging/logger.js';
 
 const logger = getLogger();
@@ -56,7 +57,8 @@ export class AIExecutionService {
    */
   async executeWithAI(
     input: NormalizedInput,
-    config: AIProviderConfig
+    config: AIProviderConfig,
+    riskProfile?: EnhancedContentRiskProfile
   ): Promise<{
     signals: AnalysisSignal[];
     metadata: AIMetadata;
@@ -68,11 +70,12 @@ export class AIExecutionService {
       provider: config.provider,
       model: config.model,
       inputType: input.type,
+      hasRiskProfile: !!riskProfile,
     });
 
     try {
-      // Call appropriate provider
-      const response = await this.callProvider(input, config);
+      // Call appropriate provider with risk profile
+      const response = await this.callProvider(input, config, riskProfile);
 
       // Calculate cost
       const costUsd = this.calculateCost(
@@ -124,14 +127,18 @@ export class AIExecutionService {
   /**
    * Call AI provider based on configuration
    */
-  private async callProvider(input: NormalizedInput, config: AIProviderConfig): Promise<AIResponse> {
+  private async callProvider(
+    input: NormalizedInput,
+    config: AIProviderConfig,
+    riskProfile?: EnhancedContentRiskProfile
+  ): Promise<AIResponse> {
     switch (config.provider.toLowerCase()) {
       case 'anthropic':
-        return await this.callAnthropic(input, config);
+        return await this.callAnthropic(input, config, riskProfile);
       case 'openai':
-        return await this.callOpenAI(input, config);
+        return await this.callOpenAI(input, config, riskProfile);
       case 'google':
-        return await this.callGoogle(input, config);
+        return await this.callGoogle(input, config, riskProfile);
       default:
         throw new Error(`Unsupported AI provider: ${config.provider}`);
     }
@@ -140,8 +147,12 @@ export class AIExecutionService {
   /**
    * Call Anthropic Claude API
    */
-  private async callAnthropic(input: NormalizedInput, config: AIProviderConfig): Promise<AIResponse> {
-    const prompt = this.buildPrompt(input);
+  private async callAnthropic(
+    input: NormalizedInput,
+    config: AIProviderConfig,
+    riskProfile?: EnhancedContentRiskProfile
+  ): Promise<AIResponse> {
+    const prompt = this.buildPrompt(input, riskProfile);
     const startTime = Date.now();
 
     const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -190,8 +201,12 @@ export class AIExecutionService {
   /**
    * Call OpenAI GPT API
    */
-  private async callOpenAI(input: NormalizedInput, config: AIProviderConfig): Promise<AIResponse> {
-    const prompt = this.buildPrompt(input);
+  private async callOpenAI(
+    input: NormalizedInput,
+    config: AIProviderConfig,
+    riskProfile?: EnhancedContentRiskProfile
+  ): Promise<AIResponse> {
+    const prompt = this.buildPrompt(input, riskProfile);
     const startTime = Date.now();
 
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -243,8 +258,12 @@ export class AIExecutionService {
   /**
    * Call Google Gemini API
    */
-  private async callGoogle(input: NormalizedInput, config: AIProviderConfig): Promise<AIResponse> {
-    const prompt = this.buildPrompt(input);
+  private async callGoogle(
+    input: NormalizedInput,
+    config: AIProviderConfig,
+    riskProfile?: EnhancedContentRiskProfile
+  ): Promise<AIResponse> {
+    const prompt = this.buildPrompt(input, riskProfile);
     const startTime = Date.now();
 
     const response = await fetch(
@@ -292,19 +311,92 @@ export class AIExecutionService {
   }
 
   /**
-   * Build analysis prompt for AI
+   * Build analysis prompt for AI with enhanced context
    */
-  private buildPrompt(input: NormalizedInput): string {
+  private buildPrompt(input: NormalizedInput, riskProfile?: EnhancedContentRiskProfile): string {
     if (isEmailInput(input)) {
-      return `Analyze this email for phishing indicators. Return a JSON array of security signals.
+      // Build enhanced email prompt with risk profile
+      let prompt = `Analyze this email for phishing indicators. Return a JSON array of security signals.
 
 Email Content:
 From: ${input.data.parsed?.from?.address || 'unknown'}
 Subject: ${input.data.parsed?.subject || 'unknown'}
-Body: ${input.data.parsed?.body?.text || input.data.parsed?.body?.html || 'empty'}
-URLs: ${input.data.parsed?.urls?.join(', ') || 'none'}
+Body: ${input.data.parsed?.body?.text || input.data.parsed?.body?.html || 'empty'}`;
 
-Return format:
+      // Add enhanced context from risk profile
+      if (riskProfile) {
+        // Sender context
+        if (riskProfile.sender?.email) {
+          prompt += `\n\nSender Profile:
+- Email: ${riskProfile.sender.email} (${riskProfile.sender.domain})
+- Display Name: ${riskProfile.sender.displayName || 'None'}
+- Role Account: ${riskProfile.sender.isRole}
+- Disposable Email: ${riskProfile.sender.isDisposable}
+- Authentication: SPF=${riskProfile.sender.hasAuthentication.spf ?? 'unknown'}, DKIM=${riskProfile.sender.hasAuthentication.dkim ?? 'unknown'}`;
+        }
+
+        // Domain context
+        if (riskProfile.domains && riskProfile.domains.allDomains.length > 0) {
+          prompt += `\n\nDomain Analysis:
+- All Domains: ${riskProfile.domains.allDomains.join(', ')}
+- Sender Domain: ${riskProfile.domains.senderDomain}
+- External Domains: ${riskProfile.domains.externalDomains.join(', ') || 'None'}
+- Suspicious Domains: ${riskProfile.domains.suspiciousDomains.join(', ') || 'None'}`;
+        }
+
+        // Link context
+        if (riskProfile.linkMetadata && riskProfile.linkMetadata.length > 0) {
+          prompt += `\n\nLinks Found (${riskProfile.linkMetadata.length} total):`;
+          riskProfile.linkMetadata.slice(0, 10).forEach((link) => {
+            prompt += `\n- ${link.url} (${link.domain})${link.isSuspicious ? ' [SUSPICIOUS: ' + link.suspicionReasons.join(', ') + ']' : ''}${link.isShortened ? ' [URL SHORTENER]' : ''}`;
+          });
+        }
+
+        // QR Code context
+        if (riskProfile.qrCodes && riskProfile.qrCodes.length > 0) {
+          prompt += `\n\nQR Codes Found: ${riskProfile.qrCodes.length} potential QR code(s) detected in images`;
+        }
+
+        // Attachment context
+        if (riskProfile.attachmentMetadata && riskProfile.attachmentMetadata.length > 0) {
+          prompt += `\n\nAttachments (${riskProfile.attachmentMetadata.length} total):`;
+          riskProfile.attachmentMetadata.forEach((att) => {
+            prompt += `\n- ${att.filename}${att.isSuspicious ? ' [SUSPICIOUS: ' + att.suspicionReasons.join(', ') + ']' : ''}`;
+          });
+        }
+
+        // Button/CTA context
+        if (riskProfile.buttons && riskProfile.buttons.length > 0) {
+          const suspiciousButtons = riskProfile.buttons.filter((b) => b.isSuspicious);
+          if (suspiciousButtons.length > 0) {
+            prompt += `\n\nSuspicious Buttons/CTAs Found (${suspiciousButtons.length}):`;
+            suspiciousButtons.slice(0, 5).forEach((btn) => {
+              prompt += `\n- "${btn.text}" → ${btn.action || btn.onclick} [${btn.suspicionReasons.join(', ')}]`;
+            });
+          }
+        }
+
+        // Form context
+        if (riskProfile.htmlStructure && riskProfile.htmlStructure.forms.length > 0) {
+          const passwordForms = riskProfile.htmlStructure.forms.filter((f) => f.hasPasswordField);
+          if (passwordForms.length > 0) {
+            prompt += `\n\nForms with Password Fields: ${passwordForms.length} credential-harvesting form(s) detected`;
+          }
+        }
+
+        // Urgency context
+        if (riskProfile.hasUrgencyLanguage) {
+          prompt += `\n\nUrgency Language Detected (Score: ${riskProfile.urgencyScore}/10):`;
+          riskProfile.urgencyIndicators.slice(0, 5).forEach((indicator) => {
+            prompt += `\n- "${indicator}"`;
+          });
+        }
+      } else {
+        // Fallback to basic URL list
+        prompt += `\nURLs: ${input.data.parsed?.urls?.join(', ') || 'none'}`;
+      }
+
+      prompt += `\n\nReturn format:
 [
   {
     "signalType": "suspicious_sender|phishing_keywords|suspicious_url|urgent_language|...",
@@ -314,14 +406,29 @@ Return format:
   }
 ]
 
-Focus on: sender authenticity, urgency tactics, suspicious URLs, grammar issues, impersonation attempts.`;
+Focus on: sender authenticity, urgency tactics, suspicious URLs, grammar issues, impersonation attempts, credential harvesting.`;
+
+      return prompt;
     } else if (isUrlInput(input)) {
-      // URL analysis
-      return `Analyze this URL for phishing indicators. Return a JSON array of security signals.
+      // URL analysis with risk profile
+      let prompt = `Analyze this URL for phishing indicators. Return a JSON array of security signals.
 
-URL: ${input.data.url}
+URL: ${input.data.url}`;
 
-Return format:
+      if (riskProfile?.linkMetadata && riskProfile.linkMetadata.length > 0) {
+        const linkInfo = riskProfile.linkMetadata[0];
+        prompt += `\n\nURL Analysis:
+- Domain: ${linkInfo.domain}
+- Path: ${linkInfo.path}
+- Is Shortened: ${linkInfo.isShortened}
+- Is Suspicious: ${linkInfo.isSuspicious}`;
+
+        if (linkInfo.isSuspicious) {
+          prompt += `\n- Suspicion Reasons: ${linkInfo.suspicionReasons.join(', ')}`;
+        }
+      }
+
+      prompt += `\n\nReturn format:
 [
   {
     "signalType": "suspicious_domain|high_entropy_url|url_shortener|typosquatting|suspicious_tld|...",
@@ -332,6 +439,8 @@ Return format:
 ]
 
 Focus on: domain reputation, entropy, typosquatting, suspicious TLDs, URL patterns.`;
+
+      return prompt;
     } else {
       return 'Analyze this content for phishing indicators.';
     }

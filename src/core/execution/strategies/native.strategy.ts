@@ -27,11 +27,31 @@ export class NativeExecutionStrategy extends BaseExecutionStrategy {
       throw new Error('Content risk profile is required for analyzer filtering');
     }
 
-    // Get filtered analyzers (content-based)
-    let analyzers = analyzerRegistry.getFilteredAnalyzers(
+    this.addExecutionStep(context, 'analyzer_filtering_completed', 'completed');
+
+    // Get filtered analyzers with detailed reasons
+    const filteringResult = analyzerRegistry.getFilteredAnalyzersWithReasons(
       context.whitelistEntry,
       context.riskProfile
     );
+
+    let analyzers = filteringResult.analyzers;
+
+    // Add analyzer filtering step to execution context
+    this.addExecutionStep(context, 'analyzer_filtering_completed', 'completed', {
+      totalAnalyzersAvailable: analyzerRegistry.getAnalyzers().length,
+      analyzersSelected: filteringResult.analyzers.length,
+      analyzersSkipped: filteringResult.skipped.length,
+      selectedAnalyzers: filteringResult.reasons.map((r) => ({
+        analyzer: r.analyzerName,
+        reason: r.reason,
+        triggeredBy: r.triggeredBy,
+      })),
+      skippedAnalyzers: filteringResult.skipped.map((s) => ({
+        analyzer: s.analyzerName,
+        reason: s.reason,
+      })),
+    });
 
     // If no analyzers to run (e.g., trusted email with no content), return safe verdict
     if (analyzers.length === 0) {
@@ -125,7 +145,13 @@ export class NativeExecutionStrategy extends BaseExecutionStrategy {
               }
             }
 
-            const signals = await analyzer.analyze(context.input);
+            // Attach risk profile to input for analyzer consumption
+            const inputWithRiskProfile = {
+              ...context.input,
+              riskProfile: context.riskProfile,
+            };
+
+            const signals = await analyzer.analyze(inputWithRiskProfile);
             const analyzerDuration = Date.now() - analyzerStartTime;
 
             // Track costs based on analyzer type

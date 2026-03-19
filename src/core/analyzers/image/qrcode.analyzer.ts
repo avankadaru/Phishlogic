@@ -89,16 +89,35 @@ export class QRCodeAnalyzer extends BaseAnalyzer {
     }
 
     try {
-      // Extract image sources from HTML
-      const imageSources = this.extractImageSources(html);
+      let imageSources: string[];
+
+      // NEW: Check if images already extracted by risk profile
+      if (input.riskProfile?.images && input.riskProfile.images.length > 0) {
+        // Use pre-extracted images from risk profile (avoids duplicate HTML parsing)
+        // Prioritize images flagged as potential QR codes by QRCodeExtractor
+        const potentialQRImages = (input.riskProfile.qrCodes || [])
+          .filter((qr: any) => qr.isPotentialQRCode)
+          .map((qr: any) => qr.imageSource);
+
+        const allImages = input.riskProfile.images.map((img: any) => img.source);
+
+        // Put potential QR images first, then others (avoid duplicates)
+        imageSources = [
+          ...potentialQRImages,
+          ...allImages.filter((src: string) => !potentialQRImages.includes(src)),
+        ].slice(0, 10); // Limit to first 10 images
+      } else {
+        // Fallback: Extract from HTML (for backward compatibility)
+        imageSources = this.extractImageSources(html);
+        imageSources = imageSources.slice(0, 10);
+      }
 
       if (imageSources.length === 0) {
         return signals;
       }
 
-      // Try to decode QR codes from each image
-      for (const imgSrc of imageSources.slice(0, 10)) {
-        // Limit to first 10 images
+      // Try to decode QR codes from each image (expensive jsQR operation)
+      for (const imgSrc of imageSources) {
         try {
           const qrSignals = await this.decodeAndAnalyzeQRCode(imgSrc);
           signals.push(...qrSignals);

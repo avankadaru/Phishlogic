@@ -78,16 +78,25 @@ export class ImageAnalyzer extends BaseAnalyzer {
     }
 
     try {
-      // Extract image sources from HTML
-      const imageSources = this.extractImageSources(html);
+      let imageSources: string[];
+
+      // NEW: Check if images already extracted by risk profile
+      if (input.riskProfile?.images && input.riskProfile.images.length > 0) {
+        // Use pre-extracted images from risk profile (avoids duplicate HTML parsing)
+        imageSources = input.riskProfile.images
+          .map((img: any) => img.source)
+          .slice(0, 5); // Limit to first 5 images
+      } else {
+        // Fallback: Extract from HTML (for backward compatibility)
+        imageSources = this.extractImageSources(html);
+      }
 
       if (imageSources.length === 0) {
         return signals;
       }
 
-      // Analyze each image
-      for (const imgSrc of imageSources.slice(0, 5)) {
-        // Limit to first 5 images to avoid excessive processing
+      // Analyze each image (OCR and EXIF - expensive operations)
+      for (const imgSrc of imageSources) {
         try {
           const imageSignals = await this.analyzeImage(imgSrc);
           signals.push(...imageSignals);

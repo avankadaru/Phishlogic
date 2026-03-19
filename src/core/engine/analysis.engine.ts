@@ -134,6 +134,21 @@ export class AnalysisEngine {
         hasQRCodes: riskProfile.hasQRCodes,
         hasForms: riskProfile.hasForms,
         hasUrgency: riskProfile.hasUrgencyLanguage,
+
+        // NEW: Extractor timing breakdown
+        extractionTimings: riskProfile.extractionTimings,
+        totalExtractionTimeMs: Object.values(riskProfile.extractionTimings || {}).reduce(
+          (a, b) => a + b,
+          0
+        ),
+
+        // NEW: Extracted counts
+        extractedDomains: riskProfile.domains?.allDomains.length || 0,
+        extractedLinks: riskProfile.linkMetadata?.length || 0,
+        extractedImages: riskProfile.images?.length || 0,
+        extractedQRCodes: riskProfile.qrCodes?.length || 0,
+        extractedAttachments: riskProfile.attachmentMetadata?.length || 0,
+        extractedButtons: riskProfile.buttons?.length || 0,
       });
 
       // Step 2: Load integration config and prepare execution context
