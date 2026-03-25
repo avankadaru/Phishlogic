@@ -563,6 +563,7 @@ export class AnalysisEngine {
       ],
       reasoning: 'Analysis encountered an unexpected error',
       signals: [],
+      actions: [],
       metadata: {
         duration: 0,
         timestamp: new Date(),

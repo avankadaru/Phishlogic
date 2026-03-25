@@ -96,156 +96,49 @@ export class RedirectAnalyzer extends BaseAnalyzer {
     const signals: AnalysisSignal[] = [];
     const urls = this.extractUrls(input);
 
+    logger.info({
+      msg: 'Starting redirect analysis',
+      urlCount: urls.length,
+    });
+
+    // ============================================================
+    // ORCHESTRATION: Loop through all URLs
+    // ============================================================
     for (const url of urls) {
       try {
-        const redirectInfo = await this.checkRedirects(url);
+        logger.info({ msg: 'Analyzing URL', url });
 
-        if (redirectInfo.redirectCount > 0) {
-          // Multiple redirects can be suspicious
-          if (redirectInfo.redirectCount >= 3) {
-            signals.push(
-              this.createSignal({
-                signalType: 'suspicious_redirect',
-                severity: 'high',
-                confidence: 0.8,
-                description: `URL redirects ${redirectInfo.redirectCount} times before reaching final destination - may be hiding malicious site`,
-                evidence: {
-                  originalUrl: url,
-                  finalUrl: redirectInfo.finalUrl,
-                  redirectCount: redirectInfo.redirectCount,
-                  redirectChain: redirectInfo.redirectChain,
-                },
-              })
-            );
-          } else if (redirectInfo.redirectCount > 0) {
-            signals.push(
-              this.createSignal({
-                signalType: 'suspicious_redirect',
-                severity: 'medium',
-                confidence: 0.6,
-                description: `URL redirects ${redirectInfo.redirectCount} time(s) to another site`,
-                evidence: {
-                  originalUrl: url,
-                  finalUrl: redirectInfo.finalUrl,
-                  redirectCount: redirectInfo.redirectCount,
-                  redirectChain: redirectInfo.redirectChain,
-                },
-              })
-            );
-          }
+        // Step 1: Extract domain
+        const domain = this.extractDomain(url);
+        logger.debug({ msg: 'Domain extracted', url, domain });
 
-          // Check if final domain differs from original
-          if (redirectInfo.domainChanged) {
-            signals.push(
-              this.createSignal({
-                signalType: 'suspicious_redirect',
-                severity: 'medium',
-                confidence: 0.7,
-                description: 'URL redirects to a different domain than the one shown',
-                evidence: {
-                  originalUrl: url,
-                  originalDomain: redirectInfo.originalDomain,
-                  finalUrl: redirectInfo.finalUrl,
-                  finalDomain: redirectInfo.finalDomain,
-                },
-              })
-            );
-          }
-        }
+        // Step 2: Validate domain (whitelist/legitimate check)
+        const domainValidation = await this.validateDomain(url, domain);
+        logger.info({
+          msg: 'Domain validation completed',
+          url,
+          domain,
+          isWhitelisted: domainValidation.isWhitelisted,
+          isLegitimate: domainValidation.isLegitimate,
+        });
 
-        // Check for malicious behaviors (drive-by downloads, script execution, etc.)
-        const maliciousBehaviors = await this.detectMaliciousBehaviors(url);
+        // Step 3: Execute behavioral analysis
+        const behaviorResult = await this.detectMaliciousBehaviors(url, domainValidation);
 
-        // Automatic downloads detected
-        if (maliciousBehaviors.automaticDownload) {
-          signals.push(
-            this.createSignal({
-              signalType: 'automatic_download_detected',
-              severity: 'critical',
-              confidence: 0.95,
-              description:
-                'Page attempts automatic file download without user interaction',
-              evidence: {
-                url,
-                downloadUrl: maliciousBehaviors.downloadUrl,
-                fileName: maliciousBehaviors.fileName,
-              },
-            })
-          );
-        }
+        // Step 4: Prepare signals based on results
+        const urlSignals = await this.prepareSignals(url, behaviorResult);
 
-        // Script execution detected
-        if (maliciousBehaviors.scriptExecution && maliciousBehaviors.scriptAnalysis) {
-          const analysis = maliciousBehaviors.scriptAnalysis;
+        // Step 5: Add to signal collection
+        signals.push(...urlSignals);
 
-          signals.push(
-            this.createSignal({
-              signalType: 'script_execution_detected',
-              severity: analysis.threatLevel === 'critical' ? 'critical' :
-                        analysis.threatLevel === 'high' ? 'critical' : 'high',
-              confidence: 0.9,
-              description: `Page contains ${analysis.summary.totalInlinePatterns} suspicious inline patterns, ${analysis.summary.totalExternalThreats} external threats, ${analysis.summary.totalRuntimeEvents} runtime events, and ${analysis.summary.totalInjections} DOM injections`,
-              evidence: {
-                url,
-                threatLevel: analysis.threatLevel,
-                summary: analysis.summary,
-
-                // NEW: Include enriched threat details with metadata for UI display
-                enrichedThreats: (analysis.findings as any).enrichedThreats,
-
-                // Include skip metadata if JS scan was skipped
-                skipMetadata: maliciousBehaviors.skipMetadata,
-
-                // NEW: Include login page context if detected (for verdict downgrade)
-                loginPageContext: (analysis.findings as any).loginPageContext,
-
-                // Legacy fields (backward compatibility)
-                inlinePatterns: analysis.findings.inlineScriptPatterns,
-                externalScripts: analysis.findings.externalScripts.slice(0, 20), // Limit to 20
-                runtimeEvents: analysis.findings.runtimeEvents.slice(0, 10), // Limit to first 10
-                domInjections: analysis.findings.domInjectionEvents.slice(0, 10)
-              },
-            })
-          );
-        }
-
-        // JS scan was skipped - add informational signal
-        if (maliciousBehaviors.skipMetadata?.skipped) {
-          signals.push(
-            this.createSignal({
-              signalType: 'js_scan_skipped',
-              severity: 'low',
-              confidence: 1.0,
-              description: `JavaScript security scan was skipped: ${maliciousBehaviors.skipMetadata.reason}`,
-              evidence: {
-                url,
-                skipped: true,
-                reason: maliciousBehaviors.skipMetadata.reason,
-                timeSaved: '~2000-3000ms',
-                explanation: 'JS scan was safely skipped due to trusted domain and login page detection. No threats expected in this scenario.'
-              },
-            })
-          );
-        }
-
-        // Installation prompt detected
-        if (maliciousBehaviors.installationPrompt) {
-          signals.push(
-            this.createSignal({
-              signalType: 'installation_prompt_detected',
-              severity: 'high',
-              confidence: 0.85,
-              description: 'Page prompts for software installation',
-              evidence: {
-                url,
-                promptText: maliciousBehaviors.promptText,
-              },
-            })
-          );
-        }
+        logger.info({
+          msg: 'URL analysis completed',
+          url,
+          signalsFound: urlSignals.length,
+        });
       } catch (error) {
         logger.warn({
-          msg: 'Failed to check redirects',
+          msg: 'Failed to analyze URL',
           url,
           error: error instanceof Error ? error.message : String(error),
         });
@@ -253,68 +146,371 @@ export class RedirectAnalyzer extends BaseAnalyzer {
       }
     }
 
+    logger.info({
+      msg: 'Redirect analysis completed',
+      totalUrls: urls.length,
+      totalSignals: signals.length,
+    });
+
     return signals;
   }
 
   /**
-   * Check redirects for a URL
+   * Validate domain (whitelist and legitimate TLD check)
+   * Called once per URL before behavioral analysis
    */
-  private async checkRedirects(url: string): Promise<{
+  private async validateDomain(
+    url: string,
+    domain: string
+  ): Promise<{
+    isWhitelisted: boolean;
+    isLegitimate: boolean;
+    whitelistReason?: string;
+  }> {
+    // Check whitelist
+    const urlInput: NormalizedInput = {
+      type: 'url',
+      id: `temp-${Date.now()}`,
+      timestamp: new Date(),
+      data: { url },
+    };
+
+    const whitelistResult = await this.whitelistService.check(urlInput);
+
+    // Check legitimate TLD (using existing method)
+    const isLegitimate = this.isLegitimateDomain(domain);
+
+    return {
+      isWhitelisted: whitelistResult.isWhitelisted,
+      isLegitimate,
+      whitelistReason: whitelistResult.matchReason,
+    };
+  }
+
+  /**
+   * Detect if page is an authentication/login page
+   * Called ONCE per page analysis - result is reused
+   */
+  /**
+   * Detect if page is an authentication/login page
+   * Uses smart wait strategy for dynamic content (embedded forms, iframes, etc.)
+   * Called ONCE per page analysis - result is reused
+   */
+  private async detectAuthPage(
+    page: Page,
+    url: string
+  ): Promise<{
+    isLoginPage: boolean;
+    score: number;
+    confidence: number;
+    signals: any[];
+    evidence: any;
+    authType: string;
+    timingMs: number;
+    waitPhase?: 'fast' | 'dynamic' | 'timeout';
+  }> {
+    try {
+      // Use smart wait version - handles dynamic content automatically
+      const result = await this.loginDetectionService.detectAuthPageWithWait(page, undefined, {
+        maxWaitMs: 3000,
+        fastCheckMs: 500,
+        enableSmartWait: true
+      });
+
+      return {
+        ...result,
+        timingMs: result.timingMs ?? 0, // Ensure timingMs is always defined
+      };
+    } catch (error) {
+      logger.warn({
+        msg: 'Auth detection failed - returning defaults',
+        url,
+        error: error instanceof Error ? error.message : String(error),
+      });
+
+      // Return safe defaults on failure
+      return {
+        isLoginPage: false,
+        score: 0,
+        confidence: 0,
+        signals: [],
+        evidence: {},
+        authType: 'UNKNOWN',
+        timingMs: 0,
+        waitPhase: 'timeout',
+      };
+    }
+  }
+
+  /**
+   * Detect automatic downloads on the page
+   */
+  private async detectDownloads(
+    page: Page
+  ): Promise<{
+    detected: boolean;
+    url?: string;
+    fileName?: string;
+  }> {
+    return (await page.evaluate(`
+      (() => {
+        const downloadLinks = document.querySelectorAll('a[download]');
+        if (downloadLinks.length > 0) {
+          return {
+            detected: true,
+            url: downloadLinks[0].href,
+            fileName: downloadLinks[0].download,
+          };
+        }
+
+        const iframes = document.querySelectorAll('iframe[src*="download"]');
+        if (iframes.length > 0) {
+          return {
+            detected: true,
+            url: iframes[0].src,
+          };
+        }
+
+        return { detected: false };
+      })()
+    `)) as { detected: boolean; url?: string; fileName?: string };
+  }
+
+  /**
+   * Detect installation prompts on the page
+   */
+  private async detectInstallationPrompts(
+    page: Page
+  ): Promise<{
+    detected: boolean;
+    text?: string;
+  }> {
+    return (await page.evaluate(`
+      (() => {
+        const bodyText = document.body.textContent || '';
+        const installKeywords = [
+          'install now',
+          'download and install',
+          'setup.exe',
+          'install plugin',
+          'install extension',
+          'install software',
+        ];
+
+        for (const keyword of installKeywords) {
+          if (bodyText.toLowerCase().includes(keyword)) {
+            return { detected: true, text: keyword };
+          }
+        }
+        return { detected: false };
+      })()
+    `)) as { detected: boolean; text?: string };
+  }
+
+  /**
+   * Prepare signals from malicious behavior detection results
+   * Converts detection results into analysis signals
+   */
+  private async prepareSignals(
+    url: string,
+    behaviorResult: {
+      automaticDownload: boolean;
+      downloadUrl?: string;
+      fileName?: string;
+      scriptExecution: boolean;
+      scriptAnalysis?: ScriptAnalysisResult;
+      installationPrompt: boolean;
+      promptText?: string;
+      suspiciousJavaScript: boolean;
+      skipMetadata?: { skipped: boolean; reason?: string };
+      jsPatterns?: string[];
+      redirectInfo?: {
+        redirectCount: number;
+        finalUrl: string;
+        redirectChain: string[];
+        originalDomain: string;
+        finalDomain: string;
+        domainChanged: boolean;
+      };
+    }
+  ): Promise<AnalysisSignal[]> {
+    const signals: AnalysisSignal[] = [];
+
+    // Redirect signals (suspicious redirect + domain change)
+    const redirectInfo = behaviorResult.redirectInfo;
+    if (redirectInfo) {
+      // Signal 1: Suspicious redirect (multiple hops)
+      if (redirectInfo.redirectCount >= 3) {
+        signals.push(
+          this.createSignal({
+            signalType: 'suspicious_redirect',
+            severity: 'high',
+            confidence: 0.8,
+            description: `URL redirects ${redirectInfo.redirectCount} times before reaching final destination - may be hiding malicious site`,
+            evidence: {
+              originalUrl: url,
+              finalUrl: redirectInfo.finalUrl,
+              redirectCount: redirectInfo.redirectCount,
+              redirectChain: redirectInfo.redirectChain,
+            },
+          })
+        );
+      } else if (redirectInfo.redirectCount > 0) {
+        signals.push(
+          this.createSignal({
+            signalType: 'suspicious_redirect',
+            severity: 'medium',
+            confidence: 0.6,
+            description: `URL redirects ${redirectInfo.redirectCount} time(s) to another site`,
+            evidence: {
+              originalUrl: url,
+              finalUrl: redirectInfo.finalUrl,
+              redirectCount: redirectInfo.redirectCount,
+              redirectChain: redirectInfo.redirectChain,
+            },
+          })
+        );
+      }
+
+      // Signal 2: Domain change (separate signal)
+      if (redirectInfo.domainChanged) {
+        signals.push(
+          this.createSignal({
+            signalType: 'suspicious_redirect',
+            severity: 'medium',
+            confidence: 0.7,
+            description: 'URL redirects to a different domain than the one shown',
+            evidence: {
+              originalUrl: url,
+              originalDomain: redirectInfo.originalDomain,
+              finalUrl: redirectInfo.finalUrl,
+              finalDomain: redirectInfo.finalDomain,
+              redirectChain: redirectInfo.redirectChain,
+            },
+          })
+        );
+      }
+    }
+
+    // Automatic download signal
+    if (behaviorResult.automaticDownload) {
+      signals.push(
+        this.createSignal({
+          signalType: 'automatic_download_detected',
+          severity: 'critical',
+          confidence: 0.95,
+          description: 'Page attempts automatic file download without user interaction',
+          evidence: {
+            url,
+            downloadUrl: behaviorResult.downloadUrl,
+            fileName: behaviorResult.fileName,
+          },
+        })
+      );
+    }
+
+    // Installation prompt signal
+    if (behaviorResult.installationPrompt) {
+      signals.push(
+        this.createSignal({
+          signalType: 'installation_prompt_detected',
+          severity: 'high',
+          confidence: 0.85,
+          description: 'Page prompts for software installation',
+          evidence: {
+            url,
+            promptText: behaviorResult.promptText,
+          },
+        })
+      );
+    }
+
+    // JavaScript threat signals
+    if (behaviorResult.scriptExecution && behaviorResult.scriptAnalysis) {
+      const analysis = behaviorResult.scriptAnalysis;
+
+      signals.push(
+        this.createSignal({
+          signalType: 'script_execution_detected',
+          severity:
+            analysis.threatLevel === 'critical'
+              ? 'critical'
+              : analysis.threatLevel === 'high'
+              ? 'critical'
+              : 'high',
+          confidence: 0.9,
+          description: `Page contains ${analysis.summary.totalInlinePatterns} suspicious inline patterns, ${analysis.summary.totalExternalThreats} external threats, ${analysis.summary.totalRuntimeEvents} runtime events, and ${analysis.summary.totalInjections} DOM injections`,
+          evidence: {
+            url,
+            threatLevel: analysis.threatLevel,
+            summary: analysis.summary,
+            enrichedThreats: (analysis.findings as any).enrichedThreats,
+            skipMetadata: behaviorResult.skipMetadata,
+            loginPageContext: (analysis.findings as any).loginPageContext,
+            inlinePatterns: analysis.findings.inlineScriptPatterns,
+            externalScripts: analysis.findings.externalScripts.slice(0, 20),
+            runtimeEvents: analysis.findings.runtimeEvents.slice(0, 10),
+            domInjections: analysis.findings.domInjectionEvents.slice(0, 10),
+          },
+        })
+      );
+    }
+
+    // JS scan was skipped - add informational signal
+    if (behaviorResult.skipMetadata?.skipped) {
+      signals.push(
+        this.createSignal({
+          signalType: 'js_scan_skipped',
+          severity: 'low',
+          confidence: 1.0,
+          description: `JavaScript security scan was skipped: ${behaviorResult.skipMetadata.reason}`,
+          evidence: {
+            url,
+            skipped: true,
+            reason: behaviorResult.skipMetadata.reason,
+            timeSaved: '~2000-3000ms',
+            explanation:
+              'JS scan was safely skipped due to trusted domain and login page detection. No threats expected in this scenario.',
+          },
+        })
+      );
+    }
+
+    return signals;
+  }
+
+  /**
+   * Get redirect information from page after navigation
+   * Called AFTER page.goto() completes
+   */
+  private getRedirectInfo(
+    page: Page,
+    url: string,
+    redirectCount: number,
+    redirectChain: string[]
+  ): {
     redirectCount: number;
     finalUrl: string;
     redirectChain: string[];
     originalDomain: string;
     finalDomain: string;
     domainChanged: boolean;
-  }> {
-    const browser = await this.getBrowser();
-    const context = await browser.newContext({
-      userAgent:
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    });
-    const page = await context.newPage();
+  } {
+    const finalUrl = page.url();
+    redirectChain.push(finalUrl);
 
-    const redirectChain: string[] = [url];
-    let redirectCount = 0;
+    const originalDomain = this.extractDomain(url);
+    const finalDomain = this.extractDomain(finalUrl);
+    const domainChanged = originalDomain !== finalDomain;
 
-    try {
-      // Track navigation events
-      page.on('response', (response) => {
-        const status = response.status();
-        if (status >= 300 && status < 400) {
-          redirectCount++;
-          const location = response.headers()['location'];
-          if (location && redirectCount < MAX_REDIRECTS) {
-            redirectChain.push(location);
-          }
-        }
-      });
-
-      // Navigate to URL
-      await page.goto(url, {
-        waitUntil: 'domcontentloaded',
-        timeout: NAVIGATION_TIMEOUT,
-      });
-
-      const finalUrl = page.url();
-      redirectChain.push(finalUrl);
-
-      const originalDomain = this.extractDomain(url);
-      const finalDomain = this.extractDomain(finalUrl);
-      const domainChanged = originalDomain !== finalDomain;
-
-      return {
-        redirectCount,
-        finalUrl,
-        redirectChain,
-        originalDomain,
-        finalDomain,
-        domainChanged,
-      };
-    } finally {
-      await page.close();
-      await context.close();
-    }
+    return {
+      redirectCount,
+      finalUrl,
+      redirectChain,
+      originalDomain,
+      finalDomain,
+      domainChanged,
+    };
   }
 
   /**
@@ -349,128 +545,16 @@ export class RedirectAnalyzer extends BaseAnalyzer {
   }
 
   /**
-   * Determine if JavaScript security scan should be skipped for this URL
-   *
-   * Skip condition: (Domain is whitelisted OR Domain is legitimate) AND Page is login page
-   *
-   * Both conditions must be true:
-   * 1. Domain is trusted (whitelisted OR has legitimate TLD)
-   * 2. Page is a login page
-   *
-   * @returns true if safe to skip, false if scan should run
-   */
-  private async shouldSkipJSScan(url: string, page: Page): Promise<{
-    shouldSkip: boolean;
-    reason?: string;
-  }> {
-    const skipCheckStart = Date.now();
-
-    try {
-      const domain = this.extractDomain(url);
-      if (!domain) {
-        return { shouldSkip: false };
-      }
-
-      // Step 1: Check if domain is trusted (whitelisted OR legitimate)
-      // Create a simple URL input to check whitelist
-      const urlInput: NormalizedInput = {
-        type: 'url',
-        id: `temp-${Date.now()}`,
-        timestamp: new Date(),
-        data: { url }
-      };
-      const whitelistResult = await this.whitelistService.check(urlInput);
-      const isWhitelisted = whitelistResult.isWhitelisted;
-      const isLegitimate = this.isLegitimateDomain(domain);
-      const isTrustedDomain = isWhitelisted || isLegitimate;
-
-      if (!isTrustedDomain) {
-        // Domain is not trusted - proceed with full scan
-        logger.debug({
-          msg: 'JS scan will proceed - domain not trusted',
-          url,
-          domain,
-          isWhitelisted: false,
-          isLegitimate: false,
-          checkDuration: Date.now() - skipCheckStart
-        });
-        return { shouldSkip: false };
-      }
-
-      // Step 2: Check if page is a login/auth page using advanced detection
-      const authDetectionTimeout = 3000;
-      const authDetection = await Promise.race([
-        this.loginDetectionService.detectAuthPage(page),
-        new Promise<any>((_, reject) =>
-          setTimeout(() => reject(new Error('Auth detection timeout')), authDetectionTimeout)
-        )
-      ]).catch((error) => {
-        logger.warn({
-          msg: 'Auth detection failed',
-          url,
-          error: error instanceof Error ? error.message : String(error)
-        });
-        return { isLoginPage: false, score: 0, confidence: 0, signals: [], evidence: {}, authType: 'UNKNOWN' };
-      });
-
-      if (!authDetection.isLoginPage || authDetection.score < 5) {
-        // Not a login page (or score below threshold) - proceed with full scan
-        logger.debug({
-          msg: 'JS scan will proceed - not a login page',
-          url,
-          domain,
-          isWhitelisted,
-          isLegitimate,
-          authType: authDetection.authType,
-          score: authDetection.score,
-          confidence: authDetection.confidence,
-          checkDuration: Date.now() - skipCheckStart
-        });
-        return { shouldSkip: false };
-      }
-
-      // BOTH conditions met: (whitelisted OR legitimate) AND login → SKIP
-      const trustReason = isWhitelisted
-        ? `whitelisted (${whitelistResult.matchReason})`
-        : `legitimate TLD`;
-
-      logger.info({
-        msg: 'Skipping JS scan - trusted domain with auth page',
-        url,
-        domain,
-        trustReason,
-        isWhitelisted,
-        isLegitimate,
-        authType: authDetection.authType,
-        score: authDetection.score,
-        confidence: authDetection.confidence,
-        detectionMethod: authDetection.evidence?.detectionMethod,
-        timingMs: authDetection.timingMs,
-        checkDuration: Date.now() - skipCheckStart
-      });
-
-      return {
-        shouldSkip: true,
-        reason: `Trusted domain (${trustReason}) with ${authDetection.authType} page (score: ${authDetection.score.toFixed(1)}, confidence: ${(authDetection.confidence * 100).toFixed(0)}%)`
-      };
-
-    } catch (error) {
-      // On error, default to NOT skipping (safe fallback - no false negatives)
-      logger.warn({
-        msg: 'Skip check failed - defaulting to full scan',
-        url,
-        error: error instanceof Error ? error.message : String(error),
-        checkDuration: Date.now() - skipCheckStart
-      });
-
-      return { shouldSkip: false };
-    }
-  }
-
-  /**
    * Detect malicious behaviors on the page
    */
-  private async detectMaliciousBehaviors(url: string): Promise<{
+  private async detectMaliciousBehaviors(
+    url: string,
+    domainInfo: {
+      isWhitelisted: boolean;
+      isLegitimate: boolean;
+      whitelistReason?: string;
+    }
+  ): Promise<{
     automaticDownload: boolean;
     downloadUrl?: string;
     fileName?: string;
@@ -480,11 +564,15 @@ export class RedirectAnalyzer extends BaseAnalyzer {
     promptText?: string;
     suspiciousJavaScript: boolean;
     skipMetadata?: { skipped: boolean; reason?: string };
-    /**
-     * @deprecated Use scriptAnalysis.findings instead for detailed threat information
-     * This field maps to legacy format for backward compatibility and will be removed in v3.0
-     */
     jsPatterns?: string[];
+    redirectInfo?: {
+      redirectCount: number;
+      finalUrl: string;
+      redirectChain: string[];
+      originalDomain: string;
+      finalDomain: string;
+      domainChanged: boolean;
+    };
   }> {
     const browser = await this.getBrowser();
     const context = await browser.newContext({
@@ -493,7 +581,7 @@ export class RedirectAnalyzer extends BaseAnalyzer {
     });
     const page = await context.newPage();
 
-    const result = {
+    const result: any = {
       automaticDownload: false,
       scriptExecution: false,
       installationPrompt: false,
@@ -501,36 +589,187 @@ export class RedirectAnalyzer extends BaseAnalyzer {
     };
 
     try {
-      // 1️⃣ Setup security hooks BEFORE navigation (required for runtime interception)
+      logger.info({
+        msg: 'Starting behavioral analysis',
+        url,
+        isWhitelisted: domainInfo.isWhitelisted,
+        isLegitimate: domainInfo.isLegitimate,
+      });
+
+      // ============================================================
+      // PHASE 1: SETUP & NAVIGATION
+      // ============================================================
+
+      // Setup redirect tracking BEFORE navigation
+      const redirectChain: string[] = [url];
+      let redirectCount = 0;
+
+      page.on('response', (response) => {
+        const status = response.status();
+        if (status >= 300 && status < 400) {
+          redirectCount++;
+          const location = response.headers()['location'];
+          if (location && redirectCount < MAX_REDIRECTS) {
+            redirectChain.push(location);
+          }
+        }
+      });
+
       await this.setupSecurityHooks(page);
       logger.debug({ msg: 'Security hooks installed', url });
 
-      // 2️⃣ Navigate to URL
       await page.goto(url, {
         waitUntil: 'domcontentloaded',
-        timeout: NAVIGATION_TIMEOUT,
+        timeout: this.config.analysis.timeouts.dynamic,
       });
       logger.debug({ msg: 'Page navigation completed', url });
 
-      // 3️⃣ Smart Skip Optimization - Check if JS scan can be safely skipped
-      const skipCheck = await this.shouldSkipJSScan(url, page);
-      let jsAnalysis: ScriptAnalysisResult;
-      let skipMetadata: { skipped: boolean; reason?: string } | undefined;
+      // Capture redirect information after navigation
+      const redirectInfo = this.getRedirectInfo(page, url, redirectCount, redirectChain);
 
-      if (skipCheck.shouldSkip) {
-        // Return empty results - no threats detected (skipped)
+      if (redirectInfo.redirectCount > 0 || redirectInfo.domainChanged) {
+        result.redirectInfo = redirectInfo;
         logger.info({
-          msg: 'JS scan skipped',
+          msg: 'Redirect detected',
           url,
-          reason: skipCheck.reason,
-          timeSaved: '~2000-3000ms'
+          redirectCount: redirectInfo.redirectCount,
+          domainChanged: redirectInfo.domainChanged,
+          finalUrl: redirectInfo.finalUrl,
+        });
+      }
+
+      // ============================================================
+      // PHASE 2: AUTH DETECTION (ONCE - reuse result everywhere)
+      // ============================================================
+      const authDetectionStart = Date.now();
+      const authDetection = await this.detectAuthPage(page, url);
+      const authDetectionDuration = Date.now() - authDetectionStart;
+
+      logger.info({
+        msg: 'Auth detection completed',
+        url,
+        isAuthPage: authDetection.isLoginPage,
+        authType: authDetection.authType,
+        score: authDetection.score,
+        confidence: authDetection.confidence,
+        signalCount: authDetection.signals?.length || 0,
+        waitPhase: authDetection.waitPhase,
+        timingMs: authDetectionDuration,
+      });
+
+      // Store auth result in behavior result for signal preparation
+      result.authDetection = authDetection;
+
+      // ============================================================
+      // PHASE 3: MALICIOUS BEHAVIOR CHECKS (PARALLEL with timeout)
+      // Pattern: Promise.allSettled + Promise.race (overall timeout)
+      // ============================================================
+      logger.debug({ msg: 'Checking for malicious behaviors', url });
+
+      const behaviorChecksStart = Date.now();
+
+      const BEHAVIOR_CHECKS_TIMEOUT_MS = 8000;
+      const behaviorChecksPromise = Promise.allSettled([
+        this.detectDownloads(page),
+        this.detectInstallationPrompts(page),
+      ]);
+
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(
+          () => reject(new Error('Behavior checks timeout')),
+          BEHAVIOR_CHECKS_TIMEOUT_MS
+        )
+      );
+
+      let behaviorResults: PromiseSettledResult<any>[];
+      let timedOut = false;
+
+      try {
+        behaviorResults = await Promise.race([behaviorChecksPromise, timeoutPromise]);
+      } catch (error) {
+        timedOut = true;
+        logger.warn({
+          msg: 'Behavior checks timed out',
+          url,
+          timeoutMs: BEHAVIOR_CHECKS_TIMEOUT_MS,
+          error: error instanceof Error ? error.message : String(error),
         });
 
-        // Store skip metadata to include in signal evidence
-        skipMetadata = {
-          skipped: true,
-          reason: skipCheck.reason
-        };
+        behaviorResults = [
+          { status: 'rejected' as const, reason: new Error('Behavior checks timeout') },
+          { status: 'rejected' as const, reason: new Error('Behavior checks timeout') },
+        ];
+      }
+
+      const behaviorChecksDuration = Date.now() - behaviorChecksStart;
+
+      logger.debug({
+        msg: 'Behavior checks completed',
+        url,
+        timingMs: behaviorChecksDuration,
+        timedOut,
+        downloadStatus: behaviorResults[0]?.status || 'unknown',
+        installPromptStatus: behaviorResults[1]?.status || 'unknown',
+      });
+
+      // Process download result
+      const downloadResult = behaviorResults[0];
+      if (downloadResult && downloadResult.status === 'fulfilled') {
+        if (downloadResult.value?.detected) {
+          result.automaticDownload = true;
+          result.downloadUrl = downloadResult.value.url;
+          result.fileName = downloadResult.value.fileName;
+          logger.warn({
+            msg: 'Automatic download detected',
+            url,
+            downloadUrl: downloadResult.value.url,
+          });
+        }
+      } else if (downloadResult && downloadResult.status === 'rejected') {
+        logger.warn({
+          msg: 'Download check failed (ignored)',
+          url,
+          error: downloadResult.reason,
+        });
+      }
+
+      // Process installation prompt result
+      const installPromptResult = behaviorResults[1];
+      if (installPromptResult && installPromptResult.status === 'fulfilled') {
+        if (installPromptResult.value?.detected) {
+          result.installationPrompt = true;
+          result.promptText = installPromptResult.value.text;
+          logger.warn({
+            msg: 'Installation prompt detected',
+            url,
+            promptText: installPromptResult.value.text,
+          });
+        }
+      } else if (installPromptResult && installPromptResult.status === 'rejected') {
+        logger.warn({
+          msg: 'Installation prompt check failed (ignored)',
+          url,
+          error: installPromptResult.reason,
+        });
+      }
+
+      // ============================================================
+      // PHASE 4: JAVASCRIPT SCAN DECISION
+      // Skip JS scan for LOGIN pages (JavaScript is expected)
+      // ============================================================
+      let jsAnalysis: ScriptAnalysisResult;
+
+      if (authDetection.isLoginPage && authDetection.score >= 5) {
+        // SKIP - Login page detected
+        logger.info({
+          msg: 'Skipping JavaScript scan - login page detected',
+          url,
+          authType: authDetection.authType,
+          score: authDetection.score,
+          confidence: authDetection.confidence,
+          reasoning:
+            'Login pages naturally use JavaScript for authentication. Skipping to avoid false positives.',
+        });
 
         jsAnalysis = {
           hasThreats: false,
@@ -539,109 +778,93 @@ export class RedirectAnalyzer extends BaseAnalyzer {
             inlineScriptPatterns: [],
             externalScripts: [],
             runtimeEvents: [],
-            domInjectionEvents: []
+            domInjectionEvents: [],
           },
           summary: {
             totalInlinePatterns: 0,
             totalExternalThreats: 0,
             totalRuntimeEvents: 0,
-            totalInjections: 0
-          }
+            totalInjections: 0,
+          },
+        };
+
+        // Store skip metadata with login context
+        result.skipMetadata = {
+          skipped: true,
+          reason: `Login page detected (${authDetection.authType}, score: ${authDetection.score.toFixed(
+            1
+          )})`,
+          loginPageContext: {
+            isLoginPage: true,
+            authType: authDetection.authType,
+            score: authDetection.score,
+            confidence: authDetection.confidence,
+            keywords: authDetection.evidence?.keywords || [],
+            detectionMethod: authDetection.evidence?.detectionMethod || [],
+          },
         };
       } else {
-        // Proceed with full JS security scan
-        jsAnalysis = await this.scanPageForJSRisks(page, url);
+        // RUN - Not a login page
+        logger.info({
+          msg: 'Running JavaScript scan - not a login page',
+          url,
+          authType: authDetection.authType,
+          score: authDetection.score,
+          isLoginPage: authDetection.isLoginPage,
+        });
+
+        const jsScanStart = Date.now();
+        jsAnalysis = await this.scanPageForJSRisks(page, url, authDetection);
+        const jsScanDuration = Date.now() - jsScanStart;
+
+        logger.info({
+          msg: 'JavaScript scan completed',
+          url,
+          hasThreats: jsAnalysis.hasThreats,
+          threatLevel: jsAnalysis.threatLevel,
+          timingMs: jsScanDuration,
+        });
       }
 
-      // 1. Check for automatic downloads (KEEP - not redundant)
-      const downloadAttempted = (await page.evaluate(`
-        (() => {
-          const downloadLinks = document.querySelectorAll('a[download]');
-          if (downloadLinks.length > 0) {
-            return {
-              detected: true,
-              url: downloadLinks[0].href,
-              fileName: downloadLinks[0].download,
-            };
-          }
-
-          const iframes = document.querySelectorAll('iframe[src*="download"]');
-          if (iframes.length > 0) {
-            return {
-              detected: true,
-              url: iframes[0].src,
-            };
-          }
-
-          return { detected: false };
-        })()
-      `)) as { detected: boolean; url?: string; fileName?: string };
-
-      if (downloadAttempted.detected) {
-        result.automaticDownload = true;
-        (result as any).downloadUrl = downloadAttempted.url;
-        (result as any).fileName = downloadAttempted.fileName;
-      }
-
-      // 2. Use enterprise scanner results (REPLACES old script detection code)
+      // ============================================================
+      // PHASE 5: AGGREGATE RESULTS
+      // ============================================================
       if (jsAnalysis.hasThreats) {
         result.scriptExecution = true;
-        (result as any).scriptAnalysis = jsAnalysis;
-        result.suspiciousJavaScript = jsAnalysis.threatLevel === 'high' || jsAnalysis.threatLevel === 'critical';
+        result.scriptAnalysis = jsAnalysis;
+        result.suspiciousJavaScript =
+          jsAnalysis.threatLevel === 'high' || jsAnalysis.threatLevel === 'critical';
 
-        // Map to legacy pattern format for backward compatibility
+        // Map to legacy format
         const allPatterns = new Set([
           ...jsAnalysis.findings.inlineScriptPatterns,
-          ...jsAnalysis.findings.externalScripts.flatMap(s => s.patterns),
-          ...jsAnalysis.findings.runtimeEvents.map(e => e.type)
+          ...jsAnalysis.findings.externalScripts.flatMap((s) => s.patterns),
+          ...jsAnalysis.findings.runtimeEvents.map((e) => e.type),
         ]);
-        (result as any).jsPatterns = Array.from(allPatterns);
+        result.jsPatterns = Array.from(allPatterns);
       }
 
-      // Include skip metadata if scan was skipped
-      if (skipMetadata) {
-        (result as any).skipMetadata = skipMetadata;
-      }
+      logger.info({
+        msg: 'Behavioral analysis completed',
+        url,
+        hasDownload: result.automaticDownload,
+        hasInstallPrompt: result.installationPrompt,
+        hasScriptThreats: result.scriptExecution,
+        jsScanSkipped: authDetection.isLoginPage && authDetection.score >= 5,
+      });
 
-      // 3. Check for installation prompts (KEEP - not redundant)
-      const installPrompt = (await page.evaluate(`
-        (() => {
-          const bodyText = document.body.textContent || '';
-          const installKeywords = [
-            'install now',
-            'download and install',
-            'setup.exe',
-            'install plugin',
-            'install extension',
-            'install software',
-          ];
-
-          for (const keyword of installKeywords) {
-            if (bodyText.toLowerCase().includes(keyword)) {
-              return { detected: true, text: keyword };
-            }
-          }
-          return { detected: false };
-        })()
-      `)) as { detected: boolean; text?: string };
-
-      if (installPrompt.detected) {
-        result.installationPrompt = true;
-        (result as any).promptText = installPrompt.text;
-      }
-
+      return result;
     } catch (error) {
-      logger.warn({
+      logger.error({
         msg: 'Failed to detect malicious behaviors',
         url,
         error: error instanceof Error ? error.message : String(error),
       });
+      return result;
     } finally {
       await page.close();
       await context.close();
     }
-
-    return result;
   }
 
   /**
@@ -649,7 +872,18 @@ export class RedirectAnalyzer extends BaseAnalyzer {
    * Collects security findings from inline scripts, external scripts, and runtime events
    * NOTE: setupSecurityHooks() MUST be called before navigation for runtime tracking
    */
-  private async scanPageForJSRisks(page: Page, url: string): Promise<ScriptAnalysisResult> {
+  private async scanPageForJSRisks(
+    page: Page,
+    url: string,
+    authDetectionResult?: {
+      isLoginPage: boolean;
+      score: number;
+      confidence: number;
+      signals: any[];
+      evidence: any;
+      authType: string;
+    }
+  ): Promise<ScriptAnalysisResult> {
     logger.info({ msg: 'Collecting JS security scan results', url });
 
     const findings: ScriptSecurityFindings = {
@@ -1033,67 +1267,27 @@ export class RedirectAnalyzer extends BaseAnalyzer {
       };
 
       // ===================================================================
-      // LOGIN PAGE CONTEXT DETECTION: Add context for verdict downgrade
-      // Detect if page is an auth page to provide context for threat severity
-      // APPLIES TO ALL DOMAINS: Even non-legitimate domains benefit from downgrade
-      // because JavaScript is common in mature login implementations
+      // LOGIN PAGE CONTEXT: Use provided result (NO detection here)
       // ===================================================================
-      try {
-        const authDetectionTimeout = 3000;
-        const authDetection = await Promise.race([
-          this.loginDetectionService.detectAuthPage(page),
-          new Promise<any>((_, reject) =>
-            setTimeout(() => reject(new Error('Auth detection timeout')), authDetectionTimeout)
-          )
-        ]).catch((error) => {
-          logger.warn({
-            msg: 'Auth detection failed during JS scan',
-            url,
-            error: error instanceof Error ? error.message : String(error)
-          });
-          return null;
-        });
+      if (authDetectionResult && authDetectionResult.isLoginPage && authDetectionResult.score >= 5) {
+        (findings as any).loginPageContext = {
+          isLoginPage: true,
+          authType: authDetectionResult.authType,
+          score: authDetectionResult.score,
+          confidence: authDetectionResult.confidence,
+          keywords: authDetectionResult.evidence?.keywords || [],
+          oauthProviders: authDetectionResult.evidence?.oauthProviders || [],
+          ssoProviders: authDetectionResult.evidence?.ssoProviders || [],
+          detectionMethod: authDetectionResult.evidence?.detectionMethod || [],
+          reasoning: `${authDetectionResult.authType} page - JavaScript expected for authentication`,
+        };
 
-        if (authDetection && authDetection.isLoginPage && authDetection.score >= 5) {
-          (findings as any).loginPageContext = {
-            isLoginPage: true,
-            authType: authDetection.authType,
-            score: authDetection.score,
-            confidence: authDetection.confidence,
-            keywords: authDetection.evidence?.keywords || [],
-            oauthProviders: authDetection.evidence?.oauthProviders || [],
-            ssoProviders: authDetection.evidence?.ssoProviders || [],
-            detectionMethod: authDetection.evidence?.detectionMethod || [],
-            reasoning: `${authDetection.authType} page detected (score: ${authDetection.score.toFixed(1)}, confidence: ${(authDetection.confidence * 100).toFixed(0)}%) - JavaScript is expected for authentication and form validation`
-          };
-
-          logger.info({
-            msg: 'Auth page context added to JS scan results',
-            url,
-            authType: authDetection.authType,
-            score: authDetection.score,
-            confidence: authDetection.confidence,
-            detectionMethod: authDetection.evidence?.detectionMethod,
-            timingMs: authDetection.timingMs
-          });
-        } else if (authDetection && authDetection.score > 0) {
-          // Log near-miss for debugging
-          logger.debug({
-            msg: 'Page resembles auth page but score below threshold',
-            url,
-            authType: authDetection.authType,
-            score: authDetection.score,
-            confidence: authDetection.confidence,
-            threshold: 5
-          });
-        }
-      } catch (error) {
-        logger.warn({
-          msg: 'Failed to detect auth page context',
+        logger.debug({
+          msg: 'Login context added to JS scan results (from orchestrator)',
           url,
-          error: error instanceof Error ? error.message : String(error)
+          authType: authDetectionResult.authType,
+          score: authDetectionResult.score,
         });
-        // Continue without auth context (won't downgrade severity)
       }
 
       // Calculate threat level using ONLY serious threats (not benign activity)

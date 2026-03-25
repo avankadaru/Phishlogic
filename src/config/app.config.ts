@@ -63,6 +63,10 @@ const AnalysisConfigSchema = z.object({
   }),
   // JavaScript security scan timeout (milliseconds)
   scriptScanTimeoutMs: z.coerce.number().int().min(1000).max(30000).default(10000),
+  // Auth detection wait timeout (milliseconds)
+  authDetectionWaitMs: z.coerce.number().int().min(500).max(5000).default(3000),
+  // Auth detection fast path timeout (milliseconds)
+  authDetectionFastPathMs: z.coerce.number().int().min(100).max(2000).default(500),
 });
 
 /**
@@ -222,6 +226,8 @@ export function loadConfig(): AppConfig {
         contextCriticalBoost: process.env['CONTEXT_CRITICAL_BOOST'],
       },
       scriptScanTimeoutMs: process.env['SCRIPT_SCAN_TIMEOUT_MS'],
+      authDetectionWaitMs: process.env['AUTH_DETECTION_WAIT_MS'],
+      authDetectionFastPathMs: process.env['AUTH_DETECTION_FAST_PATH_MS'],
     },
     browser: {
       poolSize: process.env['BROWSER_POOL_SIZE'],

@@ -93,14 +93,14 @@ export class SenderReputationAnalyzer extends BaseAnalyzer {
    * Called by execution strategy before analysis
    */
   setOptions(options: Record<string, any>): void {
-    if (options.enableWhois !== undefined) {
-      this.enableWhois = options.enableWhois;
+    if (options['enableWhois'] !== undefined) {
+      this.enableWhois = options['enableWhois'];
     }
-    if (options.whoisTimeoutMs !== undefined) {
-      this.whoisTimeoutMs = options.whoisTimeoutMs;
+    if (options['whoisTimeoutMs'] !== undefined) {
+      this.whoisTimeoutMs = options['whoisTimeoutMs'];
     }
-    if (options.dnsTimeoutMs !== undefined) {
-      this.dnsTimeoutMs = options.dnsTimeoutMs;
+    if (options['dnsTimeoutMs'] !== undefined) {
+      this.dnsTimeoutMs = options['dnsTimeoutMs'];
     }
 
     logger.debug({
@@ -310,44 +310,46 @@ export class SenderReputationAnalyzer extends BaseAnalyzer {
       );
     }
 
-    // Process domain age results
-    if (ageResult.status === 'fulfilled' && ageResult.value) {
-      const age = ageResult.value;
+    // Process domain age results (only if WHOIS was executed)
+    if (ageResult !== null) {
+      if (ageResult.status === 'fulfilled' && ageResult.value) {
+        const age = ageResult.value;
 
-      if (age.isRecentlyRegistered) {
-        signals.push(
-          this.createSignal({
-            signalType: 'domain_recently_registered',
-            severity: 'high',
-            confidence: 0.8,
-            description: `Domain was registered recently (${age.ageInDays} days ago) - common in phishing`,
-            evidence: {
-              domain,
-              createdDate: age.createdDate?.toISOString(),
-              ageInDays: age.ageInDays,
-            },
-          })
-        );
-      }
+        if (age.isRecentlyRegistered) {
+          signals.push(
+            this.createSignal({
+              signalType: 'domain_recently_registered',
+              severity: 'high',
+              confidence: 0.8,
+              description: `Domain was registered recently (${age.ageInDays} days ago) - common in phishing`,
+              evidence: {
+                domain,
+                createdDate: age.createdDate?.toISOString(),
+                ageInDays: age.ageInDays,
+              },
+            })
+          );
+        }
 
-      if (age.hasPrivacyProtection) {
-        signals.push(
-          this.createSignal({
-            signalType: 'whois_privacy_protection',
-            severity: 'low',
-            confidence: 0.5,
-            description: 'Domain uses WHOIS privacy protection - owner identity hidden',
-            evidence: { domain },
-          })
-        );
+        if (age.hasPrivacyProtection) {
+          signals.push(
+            this.createSignal({
+              signalType: 'whois_privacy_protection',
+              severity: 'low',
+              confidence: 0.5,
+              description: 'Domain uses WHOIS privacy protection - owner identity hidden',
+              evidence: { domain },
+            })
+          );
+        }
+      } else if (ageResult.status === 'rejected') {
+        logger.debug({
+          msg: 'WHOIS lookup failed (non-critical)',
+          error: ageResult.reason,
+          domain,
+        });
+        // WHOIS failures are common and not necessarily suspicious
       }
-    } else if (ageResult.status === 'rejected') {
-      logger.debug({
-        msg: 'WHOIS lookup failed (non-critical)',
-        error: ageResult.reason,
-        domain,
-      });
-      // WHOIS failures are common and not necessarily suspicious
     }
 
     // Process domain reputation results

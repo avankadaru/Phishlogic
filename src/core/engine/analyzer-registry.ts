@@ -74,7 +74,8 @@ class AnalyzerRegistry {
    * Get analyzer by name
    */
   getAnalyzerByName(name: string): IAnalyzer | undefined {
-    return this.analyzers.find((a) => a.getName() === name);
+    const normalizedName = name.toLowerCase();
+    return this.analyzers.find((a) => a.getName().toLowerCase() === normalizedName);
   }
 
   /**
@@ -158,9 +159,10 @@ class AnalyzerRegistry {
 
     for (const analyzer of allAnalyzers) {
       const name = analyzer.getName();
+      const normalizedName = name.toLowerCase();
 
       // Authentication analyzers - only for non-trusted
-      if (['SpfAnalyzer', 'DkimAnalyzer', 'SenderReputationAnalyzer'].includes(name)) {
+      if (['spfanalyzer', 'dkimanalyzer', 'senderreputationanalyzer'].includes(normalizedName)) {
         if (!isTrusted) {
           selected.push(analyzer);
           reasons.push({
@@ -178,7 +180,7 @@ class AnalyzerRegistry {
       }
 
       // Attachment analyzer - content-based
-      if (name === 'AttachmentAnalyzer') {
+      if (normalizedName === 'attachmentanalyzer') {
         if (contentProfile.hasAttachments) {
           if (!isTrusted || whitelistEntry?.scanAttachments) {
             selected.push(analyzer);
@@ -203,7 +205,7 @@ class AnalyzerRegistry {
       }
 
       // Link analyzers - content-based
-      if (name === 'LinkReputationAnalyzer' || name === 'UrlEntropyAnalyzer' || name === 'RedirectAnalyzer') {
+      if (normalizedName === 'linkreputationanalyzer' || normalizedName === 'urlentropyanalyzer' || normalizedName === 'redirectanalyzer') {
         if (contentProfile.hasLinks) {
           if (!isTrusted || whitelistEntry?.scanRichContent) {
             selected.push(analyzer);
@@ -228,7 +230,7 @@ class AnalyzerRegistry {
       }
 
       // Image analyzer - content-based
-      if (name === 'ImageAnalyzer') {
+      if (normalizedName === 'imageanalyzer') {
         if (contentProfile.hasImages) {
           if (!isTrusted || whitelistEntry?.scanRichContent) {
             selected.push(analyzer);
@@ -253,7 +255,7 @@ class AnalyzerRegistry {
       }
 
       // QR Code analyzer - content-based
-      if (name === 'QRCodeAnalyzer') {
+      if (normalizedName === 'qrcodeanalyzer') {
         if (contentProfile.hasQRCodes) {
           if (!isTrusted || whitelistEntry?.scanRichContent) {
             selected.push(analyzer);
@@ -278,17 +280,17 @@ class AnalyzerRegistry {
       }
 
       // Form/Button analyzers - content-based
-      if (name === 'FormAnalyzer' || name === 'ButtonAnalyzer') {
-        const hasForms = name === 'FormAnalyzer' && contentProfile.hasForms;
-        const hasLinks = name === 'ButtonAnalyzer' && contentProfile.hasLinks;
+      if (normalizedName === 'formanalyzer' || normalizedName === 'buttonanalyzer') {
+        const hasForms = normalizedName === 'formanalyzer' && contentProfile.hasForms;
+        const hasLinks = normalizedName === 'buttonanalyzer' && contentProfile.hasLinks;
 
         if (hasForms || hasLinks) {
           if (!isTrusted || whitelistEntry?.scanRichContent) {
             selected.push(analyzer);
             reasons.push({
               analyzerName: name,
-              reason: name === 'FormAnalyzer' ? 'Forms detected in HTML' : 'Buttons/CTAs detected',
-              triggeredBy: name === 'FormAnalyzer' ? 'hasForms: true' : `linkCount: ${contentProfile.linkCount}`,
+              reason: normalizedName === 'formanalyzer' ? 'Forms detected in HTML' : 'Buttons/CTAs detected',
+              triggeredBy: normalizedName === 'formanalyzer' ? 'hasForms: true' : `linkCount: ${contentProfile.linkCount}`,
             });
           } else {
             skipped.push({
@@ -299,14 +301,14 @@ class AnalyzerRegistry {
         } else {
           skipped.push({
             analyzerName: name,
-            reason: name === 'FormAnalyzer' ? 'No forms detected in HTML' : 'No buttons/CTAs detected',
+            reason: normalizedName === 'formanalyzer' ? 'No forms detected in HTML' : 'No buttons/CTAs detected',
           });
         }
         continue;
       }
 
       // Content/Urgency analyzers - run if urgency detected
-      if (name === 'ContentAnalysisAnalyzer' || name === 'EmotionalManipulationAnalyzer') {
+      if (normalizedName === 'contentanalysisanalyzer' || normalizedName === 'emotionalmanipulationanalyzer') {
         if (contentProfile.hasUrgencyLanguage) {
           selected.push(analyzer);
           reasons.push({
@@ -322,14 +324,6 @@ class AnalyzerRegistry {
         }
         continue;
       }
-
-      // Default: include analyzer
-      selected.push(analyzer);
-      reasons.push({
-        analyzerName: name,
-        reason: 'Always-on analyzer',
-        triggeredBy: 'default',
-      });
     }
 
     logger.info({
@@ -363,9 +357,10 @@ class AnalyzerRegistry {
 
     for (const analyzer of analyzers) {
       const name = analyzer.getName();
+      const normalizedName = name.toLowerCase();
 
       // Authentication analyzers - only for non-trusted
-      if (['SpfAnalyzer', 'DkimAnalyzer', 'SenderReputationAnalyzer'].includes(name)) {
+      if (['spfanalyzer', 'dkimanalyzer', 'senderreputationanalyzer'].includes(normalizedName)) {
         if (!isTrusted) {
           filtered.push(analyzer);
         }
@@ -373,7 +368,7 @@ class AnalyzerRegistry {
       }
 
       // Attachment analyzer - content-based
-      if (name === 'AttachmentAnalyzer') {
+      if (normalizedName === 'attachmentanalyzer') {
         if (contentProfile.hasAttachments) {
           if (!isTrusted || whitelistEntry?.scanAttachments) {
             filtered.push(analyzer);
@@ -384,23 +379,23 @@ class AnalyzerRegistry {
 
       // Link/Image/QR/Form analyzers - content-based + rich content checkbox
       if ([
-        'LinkReputationAnalyzer',
-        'UrlEntropyAnalyzer',
-        'ImageAnalyzer',
-        'QRCodeAnalyzer',
-        'FormAnalyzer',
-        'RedirectAnalyzer',
-        'ButtonAnalyzer',
-      ].includes(name)) {
+        'linkreputationanalyzer',
+        'urlentropyanalyzer',
+        'imageanalyzer',
+        'qrcodeanalyzer',
+        'formanalyzer',
+        'redirectanalyzer',
+        'buttonanalyzer',
+      ].includes(normalizedName)) {
         const hasRelevantContent =
-          ((name.includes('Link') ||
-            name.includes('Url') ||
-            name === 'FormAnalyzer' ||
-            name === 'RedirectAnalyzer' ||
-            name === 'ButtonAnalyzer') &&
+          ((normalizedName.includes('link') ||
+            normalizedName.includes('url') ||
+            normalizedName === 'formanalyzer' ||
+            normalizedName === 'redirectanalyzer' ||
+            normalizedName === 'buttonanalyzer') &&
             contentProfile.hasLinks) ||
-          (name === 'ImageAnalyzer' && contentProfile.hasImages) ||
-          (name === 'QRCodeAnalyzer' && contentProfile.hasQRCodes);
+          (normalizedName === 'imageanalyzer' && contentProfile.hasImages) ||
+          (normalizedName === 'qrcodeanalyzer' && contentProfile.hasQRCodes);
 
         if (hasRelevantContent) {
           if (!isTrusted || whitelistEntry?.scanRichContent) {
@@ -411,7 +406,7 @@ class AnalyzerRegistry {
       }
 
       // Content analysis - run if urgency detected (always, even for trusted)
-      if (name === 'ContentAnalysisAnalyzer' || name === 'EmotionalManipulationAnalyzer') {
+      if (normalizedName === 'contentanalysisanalyzer' || normalizedName === 'emotionalmanipulationanalyzer') {
         if (contentProfile.hasUrgencyLanguage) {
           filtered.push(analyzer);
         }

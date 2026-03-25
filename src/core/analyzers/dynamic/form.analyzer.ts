@@ -8,7 +8,7 @@ import type { AnalysisSignal } from '../../models/analysis-result.js';
 import type { NormalizedInput } from '../../models/input.js';
 import { isEmailInput, isUrlInput } from '../../models/input.js';
 import { getLogger } from '../../../infrastructure/logging/index.js';
-import type { Browser, Page } from 'playwright';
+import type { Browser, BrowserContext, Page } from 'playwright';
 import { chromium } from 'playwright';
 import { loginPageDetectionService } from '../../services/login-page-detection.service.js';
 
@@ -66,8 +66,13 @@ export class FormAnalyzer extends BaseAnalyzer {
     const urls = this.extractUrls(input);
 
     for (const url of urls) {
+      let page: Page | undefined;
+      let context: BrowserContext | undefined;
+
       try {
         const formInfo = await this.checkForms(url);
+        page = formInfo.page;
+        context = formInfo.context;
 
         if (formInfo.hasSensitiveForms) {
           const fieldTypes = formInfo.sensitiveFields.map((f) => f.type);
@@ -94,7 +99,8 @@ export class FormAnalyzer extends BaseAnalyzer {
           }
           // Detect if this is a legitimate login page using sophisticated detection
           else if (fieldTypes.includes('password')) {
-            const loginDetection = await this.detectLoginPage(url, formInfo);
+            // Use page reuse optimization - no double navigation
+            const loginDetection = await this.detectLoginPageWithPage(page, url, formInfo);
 
             // Only generate signal if login page detected with sufficient confidence
             if (loginDetection.isLoginPage && loginDetection.confidence >= 0.4) {
@@ -188,6 +194,18 @@ export class FormAnalyzer extends BaseAnalyzer {
           error: error instanceof Error ? error.message : String(error),
         });
         // Continue with next URL
+      } finally {
+        // Clean up page and context
+        if (page) {
+          await page.close().catch(() => {
+            // Ignore cleanup errors
+          });
+        }
+        if (context) {
+          await context.close().catch(() => {
+            // Ignore cleanup errors
+          });
+        }
       }
     }
 
@@ -196,11 +214,14 @@ export class FormAnalyzer extends BaseAnalyzer {
 
   /**
    * Check forms on a page
+   * Returns page and context for reuse - caller must close them
    */
   private async checkForms(url: string): Promise<{
     hasSensitiveForms: boolean;
     formCount: number;
     sensitiveFields: Array<{ type: string; name: string; label?: string }>;
+    page: Page;
+    context: BrowserContext;
   }> {
     const browser = await this.getBrowser();
     const context = await browser.newContext({
@@ -209,69 +230,67 @@ export class FormAnalyzer extends BaseAnalyzer {
     });
     const page = await context.newPage();
 
-    try {
-      // Navigate to URL
-      await page.goto(url, {
-        waitUntil: 'domcontentloaded',
-        timeout: NAVIGATION_TIMEOUT,
-      });
+    // Navigate to URL
+    await page.goto(url, {
+      waitUntil: 'domcontentloaded',
+      timeout: NAVIGATION_TIMEOUT,
+    });
 
-      // Find all forms
-      const forms = await page.$$('form');
-      const formCount = forms.length;
+    // Find all forms
+    const forms = await page.$$('form');
+    const formCount = forms.length;
 
-      // Analyze input fields in all forms
-      const sensitiveFields: Array<{ type: string; name: string; label?: string }> = [];
+    // Analyze input fields in all forms
+    const sensitiveFields: Array<{ type: string; name: string; label?: string }> = [];
 
-      for (const form of forms) {
-        const inputs = await form.$$('input, textarea, select');
+    for (const form of forms) {
+      const inputs = await form.$$('input, textarea, select');
 
-        for (const input of inputs) {
-          const inputType = (await input.getAttribute('type')) ?? 'text';
-          const inputName = (await input.getAttribute('name')) ?? '';
-          const inputId = (await input.getAttribute('id')) ?? '';
-          const inputPlaceholder = (await input.getAttribute('placeholder')) ?? '';
+      for (const input of inputs) {
+        const inputType = (await input.getAttribute('type')) ?? 'text';
+        const inputName = (await input.getAttribute('name')) ?? '';
+        const inputId = (await input.getAttribute('id')) ?? '';
+        const inputPlaceholder = (await input.getAttribute('placeholder')) ?? '';
 
-          // Try to find associated label
-          let label = '';
-          try {
-            const labelElement = await form.$(`label[for="${inputId}"]`);
-            if (labelElement) {
-              label = (await labelElement.textContent()) ?? '';
-            }
-          } catch {
-            // Label not found
+        // Try to find associated label
+        let label = '';
+        try {
+          const labelElement = await form.$(`label[for="${inputId}"]`);
+          if (labelElement) {
+            label = (await labelElement.textContent()) ?? '';
           }
+        } catch {
+          // Label not found
+        }
 
-          // Check against sensitive patterns
-          const combinedText = `${inputType} ${inputName} ${inputId} ${inputPlaceholder} ${label}`;
+        // Check against sensitive patterns
+        const combinedText = `${inputType} ${inputName} ${inputId} ${inputPlaceholder} ${label}`;
 
-          for (const [fieldType, pattern] of Object.entries(SENSITIVE_FIELD_PATTERNS)) {
-            if (pattern.test(combinedText)) {
-              sensitiveFields.push({
-                type: fieldType,
-                name: inputName || inputId || inputPlaceholder,
-                label: label || undefined,
-              });
-              break; // Only count each field once
-            }
+        for (const [fieldType, pattern] of Object.entries(SENSITIVE_FIELD_PATTERNS)) {
+          if (pattern.test(combinedText)) {
+            sensitiveFields.push({
+              type: fieldType,
+              name: inputName || inputId || inputPlaceholder,
+              label: label || undefined,
+            });
+            break; // Only count each field once
           }
         }
       }
-
-      return {
-        hasSensitiveForms: sensitiveFields.length > 0,
-        formCount,
-        sensitiveFields,
-      };
-    } finally {
-      await page.close();
-      await context.close();
     }
+
+    return {
+      hasSensitiveForms: sensitiveFields.length > 0,
+      formCount,
+      sensitiveFields,
+      page,
+      context,
+    };
   }
 
   /**
    * Detect if page is a login page using sophisticated detection
+   * @deprecated Use detectLoginPageWithPage() to avoid double navigation
    */
   private async detectLoginPage(
     url: string,
@@ -327,6 +346,59 @@ export class FormAnalyzer extends BaseAnalyzer {
     } finally {
       await page.close();
       await context.close();
+    }
+  }
+
+  /**
+   * Detect login page using existing Playwright page (no re-navigation)
+   * Uses smart wait strategy for dynamic content (embedded forms, iframes, etc.)
+   */
+  private async detectLoginPageWithPage(
+    page: Page,
+    url: string,
+    formInfo: {
+      hasSensitiveForms: boolean;
+      formCount: number;
+      sensitiveFields: Array<{ type: string; name: string; label?: string }>;
+    }
+  ) {
+    try {
+      // Use smart wait detection service - handles dynamic content automatically
+      const result = await loginPageDetectionService.detectAuthPageWithWait(page, undefined, {
+        maxWaitMs: 2500,
+        fastCheckMs: 400,
+        enableSmartWait: true
+      });
+
+      logger.debug({
+        msg: 'Login detection completed (page reuse)',
+        url,
+        isLoginPage: result.isLoginPage,
+        authType: result.authType,
+        score: result.score,
+        confidence: result.confidence,
+        waitPhase: result.waitPhase,
+      });
+
+      return {
+        isLoginPage: result.isLoginPage,
+        authType: result.authType,
+        confidence: result.confidence,
+        evidence: result.evidence,
+      };
+    } catch (error) {
+      logger.warn({
+        msg: 'Login detection failed',
+        url,
+        error: error instanceof Error ? error.message : String(error),
+      });
+
+      return {
+        isLoginPage: false,
+        authType: 'UNKNOWN',
+        confidence: 0,
+        evidence: {},
+      };
     }
   }
 

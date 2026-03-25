@@ -358,6 +358,9 @@ export class LoginPageDetectionService {
   /**
    * Comprehensive authentication page detection using 12 parallel detectors
    *
+   * NOTE: This method does NOT wait for dynamic content. For pages with
+   * JavaScript-rendered forms, use detectAuthPageWithWait() instead.
+   *
    * @param page - Playwright Page object for dynamic detection
    * @param html - Optional pre-rendered HTML for static analysis
    * @returns Detection result with auth type, score, and evidence
@@ -416,6 +419,147 @@ export class LoginPageDetectionService {
 
     // Return result with timing
     return { ...result, timingMs: durationMs };
+  }
+
+  /**
+   * Detect authentication page with smart waiting for dynamic content
+   *
+   * Three-tier strategy:
+   * - Tier 1 (0-500ms): Fast check for immediately visible auth elements
+   * - Tier 2 (500-3000ms): Wait for JavaScript-rendered content
+   * - Tier 3 (3000ms+): Proceed with detection regardless
+   *
+   * @param page - Playwright Page object for dynamic detection
+   * @param html - Optional pre-rendered HTML for static analysis
+   * @param options - Configuration options for wait strategy
+   * @returns Detection result with auth type, score, evidence, and wait phase
+   */
+  async detectAuthPageWithWait(
+    page: Page,
+    html?: string,
+    options?: {
+      maxWaitMs?: number;      // Default: 3000ms
+      fastCheckMs?: number;    // Default: 500ms
+      enableSmartWait?: boolean; // Default: true
+    }
+  ): Promise<LoginPageDetectionResult & { waitPhase: 'fast' | 'dynamic' | 'timeout' }> {
+    const config = {
+      maxWaitMs: options?.maxWaitMs ?? 3000,
+      fastCheckMs: options?.fastCheckMs ?? 500,
+      enableSmartWait: options?.enableSmartWait ?? true,
+    };
+
+    const startTime = Date.now();
+    let waitPhase: 'fast' | 'dynamic' | 'timeout' = 'fast';
+
+    try {
+      if (config.enableSmartWait) {
+        logger.debug({
+          msg: 'Starting smart wait for auth indicators',
+          url: page.url(),
+          maxWaitMs: config.maxWaitMs,
+        });
+
+        // Tier 1: Fast path - check if auth elements visible immediately
+        const fastCheckPromise = page.waitForSelector(
+          'input[type="password"], form[action*="login"], form[action*="signin"], iframe[src*="auth"], iframe[src*="login"]',
+          { timeout: config.fastCheckMs, state: 'attached' }
+        );
+        const fastCheckTimeout = new Promise((resolve) =>
+          setTimeout(() => resolve(null), config.fastCheckMs)
+        );
+        const fastResult = await Promise.race([fastCheckPromise, fastCheckTimeout]);
+
+        if (fastResult) {
+          waitPhase = 'fast';
+          logger.info({
+            msg: 'Auth indicators found (fast path)',
+            url: page.url(),
+            waitMs: Date.now() - startTime,
+          });
+        } else {
+          // Tier 2: Dynamic wait - wait longer for JavaScript-rendered content
+          waitPhase = 'dynamic';
+          const remainingWaitMs = config.maxWaitMs - (Date.now() - startTime);
+
+          if (remainingWaitMs > 0) {
+            logger.debug({
+              msg: 'Fast path timeout - waiting for dynamic content',
+              url: page.url(),
+              remainingMs: remainingWaitMs,
+            });
+
+            const dynamicCheckPromise = page.waitForSelector(
+              'input[type="password"], input[type="email"], input[name*="user"], input[name*="login"], form, iframe',
+              { timeout: remainingWaitMs, state: 'attached' }
+            );
+            const dynamicCheckTimeout = new Promise((resolve) =>
+              setTimeout(() => resolve(null), remainingWaitMs)
+            );
+            const dynamicResult = await Promise.race([dynamicCheckPromise, dynamicCheckTimeout]);
+
+            if (dynamicResult) {
+              logger.info({
+                msg: 'Auth indicators found (dynamic wait)',
+                url: page.url(),
+                waitMs: Date.now() - startTime,
+              });
+            } else {
+              // Tier 3: Timeout - proceed anyway
+              waitPhase = 'timeout';
+              logger.debug({
+                msg: 'Dynamic wait timeout - proceeding with detection',
+                url: page.url(),
+                waitMs: Date.now() - startTime,
+              });
+            }
+          }
+        }
+
+        // Small additional delay for Shadow DOM and delayed iframes to settle
+        if (waitPhase !== 'timeout') {
+          await page.waitForTimeout(200);
+        }
+      }
+
+      // Run detection with timing
+      const detectionStart = Date.now();
+      const result = await this.detectAuthPage(page, html);
+      const detectionDuration = Date.now() - detectionStart;
+      const totalWaitMs = Date.now() - startTime;
+
+      logger.info({
+        msg: 'Auth detection with wait completed',
+        url: page.url(),
+        waitPhase,
+        totalWaitMs,
+        detectionMs: detectionDuration,
+        isAuthPage: result.isAuthPage,
+        authType: result.authType,
+        score: result.score,
+      });
+
+      return {
+        ...result,
+        waitPhase,
+        timingMs: detectionDuration,
+      };
+    } catch (error) {
+      const totalWaitMs = Date.now() - startTime;
+      logger.warn({
+        msg: 'Smart wait failed - falling back to immediate detection',
+        url: page.url(),
+        waitMs: totalWaitMs,
+        error: error instanceof Error ? error.message : String(error),
+      });
+
+      // Fallback to immediate detection
+      const result = await this.detectAuthPage(page, html);
+      return {
+        ...result,
+        waitPhase: 'timeout',
+      };
+    }
   }
 
   /**
