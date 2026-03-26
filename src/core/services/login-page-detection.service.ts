@@ -130,16 +130,20 @@ class DOMFormDetector implements AuthDetector {
       return await page.evaluate(() => {
         const signals: any[] = [];
 
+        // @ts-expect-error - document exists in browser context (Playwright page.evaluate)
         if (document.querySelector('input[type="password"]')) {
           signals.push({ type: 'password_input', weight: 5, source: 'dom' });
         }
 
+        // @ts-expect-error - document exists in browser context (Playwright page.evaluate)
         if (document.querySelector('input[type="email"],input[name*="user"],input[name*="email"]')) {
           signals.push({ type: 'user_identifier', weight: 2, source: 'dom' });
         }
 
+        // @ts-expect-error - document exists in browser context (Playwright page.evaluate)
         const buttons = [...document.querySelectorAll('button,input[type="submit"]')];
         const loginBtn = buttons.find(b => {
+          // @ts-expect-error - HTMLElement/HTMLInputElement exist in browser context
           const text = ((b as HTMLElement).innerText || (b as HTMLInputElement).value || '').toLowerCase();
           return text.includes('login') || text.includes('sign in');
         });
@@ -163,10 +167,12 @@ class MFADetector implements AuthDetector {
       return await page.evaluate(() => {
         const signals: any[] = [];
 
+        // @ts-expect-error - document exists in browser context (Playwright page.evaluate)
         if (document.querySelector('input[name*="otp"],input[name*="code"],input[name*="token"]')) {
           signals.push({ type: 'mfa_input', weight: 4, source: 'dom' });
         }
 
+        // @ts-expect-error - document exists in browser context (Playwright page.evaluate)
         const text = document.body.innerText.toLowerCase();
         if (text.includes('verification code') || text.includes('two-factor') || text.includes('2fa')) {
           signals.push({ type: 'mfa_text', weight: 3, source: 'dom' });
@@ -187,7 +193,9 @@ class CaptchaDetector implements AuthDetector {
       return await page.evaluate(() => {
         const signals: any[] = [];
 
+        // @ts-expect-error - document exists in browser context (Playwright page.evaluate)
         if (document.querySelector('iframe[src*="captcha"]') ||
+            // @ts-expect-error - document exists in browser context (Playwright page.evaluate)
             document.querySelector('.g-recaptcha,iframe[src*="recaptcha"],#captcha')) {
           signals.push({ type: 'captcha_widget', weight: 3, source: 'dom' });
         }
@@ -207,7 +215,9 @@ class CSRFDetector implements AuthDetector {
       return await page.evaluate(() => {
         const signals: any[] = [];
 
+        // @ts-expect-error - document exists in browser context (Playwright page.evaluate)
         if (document.querySelector('input[name*="csrf"]') ||
+            // @ts-expect-error - document exists in browser context (Playwright page.evaluate)
             document.querySelector('input[name="authenticity_token"]')) {
           signals.push({ type: 'csrf_protection', weight: 2, source: 'dom' });
         }
@@ -226,6 +236,7 @@ class ShadowDOMDetector implements AuthDetector {
     try {
       return await page.evaluate(() => {
         const signals: any[] = [];
+        // @ts-expect-error - document exists in browser context (Playwright page.evaluate)
         const elements = document.querySelectorAll('*');
 
         for (const el of elements) {
@@ -251,6 +262,7 @@ class IframeAuthDetector implements AuthDetector {
     try {
       return await page.evaluate(() => {
         const signals: any[] = [];
+        // @ts-expect-error - document exists in browser context (Playwright page.evaluate)
         const iframes = [...document.querySelectorAll('iframe')];
 
         for (const frame of iframes) {
@@ -276,9 +288,11 @@ class HiddenFormDetector implements AuthDetector {
     try {
       return await page.evaluate(() => {
         const signals: any[] = [];
+        // @ts-expect-error - document exists in browser context (Playwright page.evaluate)
         const forms = [...document.querySelectorAll('form')];
 
         for (const form of forms) {
+          // @ts-expect-error - window exists in browser context (Playwright page.evaluate)
           const hidden = window.getComputedStyle(form).display === 'none';
           if (hidden && form.querySelector('input[type="password"]')) {
             signals.push({ type: 'hidden_login_form', weight: 3, source: 'dom' });

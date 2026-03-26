@@ -1,13 +1,10 @@
 import { BaseRepository } from './base.repository.js';
-import { getLogger } from '../../logging/logger.js';
 import type {
   IAIModelRepository,
   AIModelConfig,
   CreateAIModelParams,
   UpdateAIModelParams,
 } from '../../../core/interfaces/repositories/ai-model.repository.interface.js';
-
-const logger = getLogger();
 
 /**
  * AI Model Repository Implementation
@@ -98,7 +95,7 @@ export class AIModelRepository extends BaseRepository<AIModelConfig, any> implem
   /**
    * Update AI model
    */
-  async update(id: string, params: UpdateAIModelParams): Promise<AIModelConfig | null> {
+  override async update(id: string, params: UpdateAIModelParams): Promise<AIModelConfig | null> {
     return super.update(id, params as Partial<AIModelConfig>);
   }
 
@@ -137,7 +134,7 @@ export class AIModelRepository extends BaseRepository<AIModelConfig, any> implem
    * @param id - The AI model ID to delete
    * @returns true if deleted, false if not found
    */
-  async delete(id: string): Promise<boolean> {
+  override async delete(id: string): Promise<boolean> {
     const sql = `DELETE FROM ${this.tableName} WHERE id = $1`;
     const result = await this.executeQuery(sql, [id]);
     return (result.rowCount ?? 0) > 0;

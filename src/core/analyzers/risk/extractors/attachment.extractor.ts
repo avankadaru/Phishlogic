@@ -93,10 +93,9 @@ export class AttachmentExtractor extends BaseExtractor<AttachmentMetadata[]> {
   /**
    * Check if attachment has suspicious extension
    */
-  private checkSuspiciousExtension(filename: string, extension: string): string[] {
+  private checkSuspiciousExtension(filename: string, _extension: string): string[] {
     const reasons: string[] = [];
     const lowerFilename = filename.toLowerCase();
-    const lowerExtension = extension.toLowerCase();
 
     // Check against known suspicious extensions
     for (const suspiciousExt of SUSPICIOUS_EXTENSIONS) {

@@ -75,7 +75,13 @@ export type SignalType =
   | 'script_execution_detected'
   | 'installation_prompt_detected'
   | 'suspicious_javascript_detected'
-  | 'js_scan_skipped';
+  | 'js_scan_skipped'
+  // NLP Emotional Manipulation signals
+  | 'fear_manipulation'
+  | 'urgency_manipulation'
+  | 'authority_manipulation'
+  | 'scarcity_manipulation'
+  | 'greed_manipulation';
 
 /**
  * Severity levels for analysis signals

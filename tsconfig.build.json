@@ -12,6 +12,8 @@
     "dist",
     "tests",
     "**/*.test.ts",
-    "**/*.spec.ts"
+    "**/*.spec.ts",
+    "**/*.old.ts",
+    "**/*.backup.ts"
   ]
 }

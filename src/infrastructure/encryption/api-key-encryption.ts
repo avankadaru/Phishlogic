@@ -30,7 +30,7 @@ function getEncryptionKey(): Buffer {
 
   // Use JWT_SECRET as encryption key base (it should be 32+ chars)
   // In production, use a dedicated ENCRYPTION_KEY environment variable
-  const keySource = process.env.ENCRYPTION_KEY || config.auth.jwtSecret;
+  const keySource = process.env['ENCRYPTION_KEY'] || config.auth.jwtSecret;
 
   if (!keySource || keySource.length < 32) {
     logger.warn({
@@ -98,7 +98,7 @@ export function decrypt(encryptedData: string): string {
       throw new Error('Invalid encrypted data format');
     }
 
-    const [ivBase64, authTagBase64, encrypted] = parts;
+    const [ivBase64, authTagBase64, encrypted] = parts as [string, string, string];
 
     const key = getEncryptionKey();
     const iv = Buffer.from(ivBase64, 'base64');
@@ -107,7 +107,7 @@ export function decrypt(encryptedData: string): string {
     const decipher = createDecipheriv(ALGORITHM, key, iv);
     decipher.setAuthTag(authTag);
 
-    let decrypted = decipher.update(encrypted, 'base64', 'utf8');
+    let decrypted: string = decipher.update(encrypted, 'base64', 'utf8') as string;
     decrypted += decipher.final('utf8');
 
     logger.debug({
@@ -131,7 +131,7 @@ export function decrypt(encryptedData: string): string {
  * @returns true if encryption key is secure, false otherwise
  */
 export function isEncryptionKeySecure(): boolean {
-  const keySource = process.env.ENCRYPTION_KEY || process.env.JWT_SECRET;
+  const keySource = process.env['ENCRYPTION_KEY'] || process.env['JWT_SECRET'];
   return !!keySource && keySource.length >= 32 && keySource !== 'phishlogic-dev-jwt-secret-key-change-in-production-min-32-chars';
 }
 
@@ -149,7 +149,7 @@ export function isValidEncryptedFormat(encryptedData: string): boolean {
       return false;
     }
 
-    const [ivBase64, authTagBase64, encrypted] = parts;
+    const [ivBase64, authTagBase64, encrypted] = parts as [string, string, string];
 
     // Validate base64 format
     const ivBuffer = Buffer.from(ivBase64, 'base64');
@@ -178,7 +178,7 @@ export function isValidEncryptedFormat(encryptedData: string): boolean {
  * @param oldKey - Old encryption key
  * @returns Data re-encrypted with current key
  */
-export function rotateEncryption(encryptedData: string, oldKey: string): string {
+export function rotateEncryption(_encryptedData: string, _oldKey: string): string {
   // This would be used during key rotation
   // For now, just throw an error as it's not implemented
   throw new Error('Key rotation not yet implemented');

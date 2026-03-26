@@ -43,7 +43,7 @@ const UpdateNotificationSchema = z.object({
  * GET /api/admin/notifications - Get all notification configurations
  */
 export async function getAllNotifications(
-  request: FastifyRequest,
+  _request: FastifyRequest,
   reply: FastifyReply
 ): Promise<void> {
   try {

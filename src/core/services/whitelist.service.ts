@@ -13,7 +13,6 @@ import type { NormalizedInput } from '../models/input.js';
 import { isEmailInput, isUrlInput } from '../models/input.js';
 import { getLogger } from '../../infrastructure/logging/index.js';
 import { query } from '../../infrastructure/database/client.js';
-import { getConfig } from '../../config/app.config.js';
 
 const logger = getLogger();
 

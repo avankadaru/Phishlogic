@@ -1,4 +1,5 @@
 import { getLogger } from '../../infrastructure/logging/logger.js';
+import type { NormalizedInput } from '../models/input.js';
 import type { IAIModelService } from '../interfaces/services/ai-model.service.interface.js';
 import type { IAIModelRepository } from '../interfaces/repositories/ai-model.repository.interface.js';
 import type {
@@ -236,9 +237,13 @@ export class AIModelService implements IAIModelService {
         timeout: model.timeoutMs,
       };
 
-      const testInput = {
-        url: 'https://test.example.com',
-        content: 'Test connection',
+      const testInput: NormalizedInput = {
+        type: 'url',
+        id: 'test-connection',
+        timestamp: new Date(),
+        data: {
+          url: 'https://test.example.com',
+        },
       };
 
       try {

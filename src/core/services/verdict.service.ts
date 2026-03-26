@@ -402,7 +402,7 @@ export class VerdictService {
    * Check if signal should be downgraded based on conditions
    */
   private shouldDowngrade(
-    signal: AnalysisSignal,
+    _signal: AnalysisSignal,
     conditions: NonNullable<ReturnType<typeof getDowngradeConditions>>,
     context: ReputationContext
   ): boolean {
@@ -526,33 +526,6 @@ export class VerdictService {
         const boost = this.config.analysis.signalAdjustments.contextCriticalBoost;
         signalValue = signalValue * (1 + boost);
       }
-
-      weightedSum += signalValue * signal.confidence * weight;
-      totalWeight += weight;
-    }
-
-    const avgConfidence = totalWeight > 0 ? weightedSum / totalWeight : 0;
-
-    // Clamp to [0, 1]
-    return Math.max(0, Math.min(1, avgConfidence));
-  }
-
-  /**
-   * Calculate weighted confidence from signals (Legacy - kept for compatibility)
-   */
-  private calculateConfidence(signals: AnalysisSignal[], analyzerWeights: Map<string, number>): number {
-    if (signals.length === 0) {
-      return 0;
-    }
-
-    let weightedSum = 0;
-    let totalWeight = 0;
-
-    for (const signal of signals) {
-      const weight = analyzerWeights.get(signal.analyzerName) ?? 1.0;
-
-      // Positive signals (pass) decrease risk, negative signals increase risk
-      const signalValue = this.getSignalValue(signal);
 
       weightedSum += signalValue * signal.confidence * weight;
       totalWeight += weight;
@@ -817,46 +790,6 @@ export class VerdictService {
     };
   }
 
-  /**
-   * Generate reasoning explanation (Legacy - kept for compatibility)
-   */
-  private generateReasoning(verdict: Verdict, signals: AnalysisSignal[], redFlags: RedFlag[]): string {
-    const parts: string[] = [];
-
-    // Verdict statement
-    if (verdict === 'Malicious') {
-      parts.push('This appears to be a phishing attempt or malicious content.');
-    } else if (verdict === 'Suspicious') {
-      parts.push('This shows several suspicious characteristics that warrant caution.');
-    } else {
-      parts.push('No significant security concerns were detected.');
-    }
-
-    // Key findings
-    if (redFlags.length > 0) {
-      const criticalFlags = redFlags.filter((f) => f.severity === 'critical');
-      const highFlags = redFlags.filter((f) => f.severity === 'high');
-
-      if (criticalFlags.length > 0) {
-        parts.push(`Critical issues found: ${criticalFlags.map((f) => f.message.toLowerCase()).join('; ')}.`);
-      } else if (highFlags.length > 0) {
-        parts.push(`High-risk issues found: ${highFlags.map((f) => f.message.toLowerCase()).join('; ')}.`);
-      } else {
-        parts.push(`${redFlags.length} warning${redFlags.length > 1 ? 's' : ''} detected.`);
-      }
-    }
-
-    // Positive indicators
-    const positiveSignals = signals.filter((s) =>
-      ['spf_pass', 'dkim_pass', 'domain_reputation_good'].includes(s.signalType)
-    );
-
-    if (positiveSignals.length > 0 && verdict === 'Safe') {
-      parts.push('The sender was successfully verified.');
-    }
-
-    return parts.join(' ');
-  }
 }
 
 /**

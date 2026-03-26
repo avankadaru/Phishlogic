@@ -121,6 +121,7 @@ export class QRCodeAnalyzer extends BaseAnalyzer {
       // Try to decode QR codes from each image (expensive jsQR operation)
       for (let i = 0; i < imageSources.length; i++) {
         const imgSrc = imageSources[i];
+        if (!imgSrc) continue;
         try {
           const qrSignals = await this.decodeAndAnalyzeQRCode(imgSrc, i + 1, stepManager);
           signals.push(...qrSignals);
@@ -190,7 +191,6 @@ export class QRCodeAnalyzer extends BaseAnalyzer {
     try {
       // Convert image to raw pixel data for jsQR
       const image = sharp(imageBuffer);
-      const metadata = await image.metadata();
       const { data, info } = await image.raw().ensureAlpha().toBuffer({ resolveWithObject: true });
 
       // Decode QR code
@@ -495,6 +495,9 @@ export class QRCodeAnalyzer extends BaseAnalyzer {
       }
 
       const base64Data = matches[1];
+      if (!base64Data) {
+        return null;
+      }
       return Buffer.from(base64Data, 'base64');
     } catch {
       return null;

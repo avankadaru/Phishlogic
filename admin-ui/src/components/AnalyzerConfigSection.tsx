@@ -3,7 +3,6 @@ import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { ChevronDown, ChevronRight, AlertCircle } from 'lucide-react';
-import { cn } from '@/lib/utils';
 import type { TaskAnalyzerMapping, ApiCredential } from '@/types';
 
 interface AnalyzerConfig {
@@ -32,9 +31,7 @@ interface TaskGroup {
 export default function AnalyzerConfigSection({
   integrationName,
   analyzers,
-  credentials,
   onSave,
-  executionMode = 'native',
 }: AnalyzerConfigSectionProps) {
 
   // Helper to check if analyzer has configurable options
@@ -274,7 +271,7 @@ export default function AnalyzerConfigSection({
                         {isExpanded && config.enabled && (
                           <div className="mt-3 pt-3 border-t space-y-3">
                             {/* Render analyzer-specific options based on analyzer name */}
-                            {renderAnalyzerOptions(analyzer, config, credentials, updateOption)}
+                            {renderAnalyzerOptions(analyzer, config, updateOption)}
                           </div>
                         )}
                       </div>
@@ -296,7 +293,6 @@ export default function AnalyzerConfigSection({
 function renderAnalyzerOptions(
   analyzer: TaskAnalyzerMapping,
   config: AnalyzerConfig,
-  credentials: ApiCredential[],
   updateOption: (analyzerName: string, optionKey: string, value: any) => void
 ) {
   const analyzerName = analyzer.analyzerName.toLowerCase();

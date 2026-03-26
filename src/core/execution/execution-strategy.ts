@@ -425,6 +425,11 @@ export class TimedExecutionStrategy implements ExecutionStrategy {
       step: `${stepName}_started`,
       startedAt: new Date(startTime),
       status: 'started',
+      stepId: randomUUID(),
+      depth: 0,
+      sequence: context.executionSteps.length,
+      source: { component: this.strategy.getName() },
+      logs: [],
     });
 
     try {
@@ -443,6 +448,11 @@ export class TimedExecutionStrategy implements ExecutionStrategy {
           actualMode: result.actualMode,
           hasAI: !!result.aiMetadata,
         },
+        stepId: randomUUID(),
+        depth: 0,
+        sequence: context.executionSteps.length,
+        source: { component: this.strategy.getName() },
+        logs: [],
       });
 
       return result;
@@ -455,6 +465,11 @@ export class TimedExecutionStrategy implements ExecutionStrategy {
         duration,
         status: 'failed',
         error: error instanceof Error ? error.message : String(error),
+        stepId: randomUUID(),
+        depth: 0,
+        sequence: context.executionSteps.length,
+        source: { component: this.strategy.getName() },
+        logs: [],
       });
 
       throw error;

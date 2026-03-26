@@ -145,7 +145,7 @@ export class EmotionalManipulationAnalyzer extends BaseAnalyzer {
   /**
    * Detect fear-based manipulation (account suspension, legal threats, security warnings)
    */
-  private detectFearAppeals(text: string, doc: any): ManipulationIndicator[] {
+  private detectFearAppeals(text: string, _doc: any): ManipulationIndicator[] {
     const indicators: ManipulationIndicator[] = [];
     const lowerText = text.toLowerCase();
 
@@ -204,7 +204,7 @@ export class EmotionalManipulationAnalyzer extends BaseAnalyzer {
   /**
    * Detect urgency pressure tactics (time-limited offers, immediate action required)
    */
-  private detectUrgencyPressure(text: string, doc: any): ManipulationIndicator[] {
+  private detectUrgencyPressure(text: string, _doc: any): ManipulationIndicator[] {
     const indicators: ManipulationIndicator[] = [];
     const lowerText = text.toLowerCase();
 
@@ -247,7 +247,7 @@ export class EmotionalManipulationAnalyzer extends BaseAnalyzer {
   /**
    * Detect authority impersonation (CEO, IT department, bank, government)
    */
-  private detectAuthorityImpersonation(text: string, doc: any): ManipulationIndicator[] {
+  private detectAuthorityImpersonation(text: string, _doc: any): ManipulationIndicator[] {
     const indicators: ManipulationIndicator[] = [];
     const lowerText = text.toLowerCase();
 
@@ -295,7 +295,7 @@ export class EmotionalManipulationAnalyzer extends BaseAnalyzer {
   /**
    * Detect scarcity tactics (limited spots, running out, exclusive offer)
    */
-  private detectScarcityTactics(text: string, doc: any): ManipulationIndicator[] {
+  private detectScarcityTactics(text: string, _doc: any): ManipulationIndicator[] {
     const indicators: ManipulationIndicator[] = [];
     const lowerText = text.toLowerCase();
 
@@ -329,7 +329,7 @@ export class EmotionalManipulationAnalyzer extends BaseAnalyzer {
   /**
    * Detect greed/reward appeals (prizes, money, inheritance, refunds)
    */
-  private detectGreedAppeals(text: string, doc: any): ManipulationIndicator[] {
+  private detectGreedAppeals(text: string, _doc: any): ManipulationIndicator[] {
     const indicators: ManipulationIndicator[] = [];
     const lowerText = text.toLowerCase();
 

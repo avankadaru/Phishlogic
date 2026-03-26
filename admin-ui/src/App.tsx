@@ -9,7 +9,6 @@ import WhitelistPage from '@/pages/WhitelistPage';
 import DebugPage from '@/pages/DebugPage';
 import SettingsPage from '@/pages/SettingsPage';
 import APIKeysPage from '@/pages/APIKeysPage';
-import CredentialsPage from '@/pages/CredentialsPage';
 import ReleaseNotesPage from '@/pages/ReleaseNotesPage';
 import SupportPage from '@/pages/SupportPage';
 import EmailTestPage from '@/pages/EmailTestPage';

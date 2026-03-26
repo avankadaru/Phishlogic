@@ -160,7 +160,7 @@ export async function requireAdmin(
  */
 export async function optionalAuth(
   request: FastifyRequest,
-  reply: FastifyReply
+  _reply: FastifyReply
 ): Promise<void> {
   try {
     const config = getConfig();

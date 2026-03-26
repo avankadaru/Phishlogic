@@ -6,7 +6,7 @@
  */
 
 import { BaseExtractor } from './base.extractor.js';
-import type { NormalizedInput, EmailInput, UrlInput } from '../../../models/input.js';
+import type { NormalizedInput, UrlInput } from '../../../models/input.js';
 import { isEmailInput, isUrlInput } from '../../../models/input.js';
 import { load } from 'cheerio';
 
@@ -160,7 +160,7 @@ export class LinkExtractor extends BaseExtractor<LinkMetadata[]> {
   /**
    * Check for redirect patterns in URL
    */
-  private hasRedirectPattern(url: string, urlObj: URL): boolean {
+  private hasRedirectPattern(_url: string, urlObj: URL): boolean {
     // Check query parameters for redirect patterns
     const redirectParams = ['redirect', 'url', 'link', 'goto', 'target', 'next', 'continue'];
 
@@ -182,7 +182,7 @@ export class LinkExtractor extends BaseExtractor<LinkMetadata[]> {
   /**
    * Check for suspicious indicators in link
    */
-  private checkSuspiciousIndicators(url: string, urlObj: URL, anchorText?: string): string[] {
+  private checkSuspiciousIndicators(_url: string, urlObj: URL, anchorText?: string): string[] {
     const reasons: string[] = [];
     const hostname = urlObj.hostname.toLowerCase();
     const path = urlObj.pathname.toLowerCase();

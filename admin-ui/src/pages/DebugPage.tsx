@@ -318,15 +318,6 @@ export default function DebugPage() {
                     <div className="mt-2 p-2 rounded-md bg-green-50 dark:bg-green-900/20">
                       <p className="text-xs text-green-800 dark:text-green-400">
                         ✓ Whitelisted: {analysis.whitelistReason}
-                        {analysis.trustLevel && (
-                          <span className={`ml-2 px-2 py-0.5 rounded-full text-xs font-medium ${
-                            analysis.trustLevel === 'high' ? 'bg-green-200 text-green-900' :
-                            analysis.trustLevel === 'medium' ? 'bg-yellow-200 text-yellow-900' :
-                            'bg-orange-200 text-orange-900'
-                          }`}>
-                            {analysis.trustLevel.toUpperCase()} TRUST
-                          </span>
-                        )}
                       </p>
                     </div>
                   )}

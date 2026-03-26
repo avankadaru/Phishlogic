@@ -261,7 +261,7 @@ export async function getRecentErrors(
  * GET /api/admin/debug/stats - Get system statistics
  */
 export async function getSystemStats(
-  request: FastifyRequest,
+  _request: FastifyRequest,
   reply: FastifyReply
 ): Promise<void> {
   try {
@@ -303,7 +303,7 @@ export async function getSystemStats(
  * GET /api/admin/debug/health - System health check
  */
 export async function getHealthCheck(
-  request: FastifyRequest,
+  _request: FastifyRequest,
   reply: FastifyReply
 ): Promise<void> {
   try {

@@ -4,6 +4,7 @@
  */
 
 import { BaseRepository } from './base.repository.js';
+import { getDatabaseClient } from '../client.js';
 import { getLogger } from '../../logging/index.js';
 
 const logger = getLogger();
@@ -44,12 +45,54 @@ export interface UpdateCredentialParams {
   isActive?: boolean;
 }
 
-export class CredentialsRepository extends BaseRepository {
+export class CredentialsRepository extends BaseRepository<ApiCredential, any> {
+  constructor() {
+    super('api_credentials');
+  }
+
+  /**
+   * Map database row to domain model
+   */
+  protected mapToDomain(row: any): ApiCredential {
+    return {
+      id: row.id,
+      credentialName: row.credential_name,
+      displayName: row.display_name,
+      description: row.description,
+      provider: row.provider,
+      apiKey: row.api_key,
+      apiSecret: row.api_secret,
+      endpointUrl: row.endpoint_url,
+      rateLimitPerDay: row.rate_limit_per_day != null ? parseInt(row.rate_limit_per_day, 10) : undefined,
+      isActive: row.is_active,
+      createdAt: new Date(row.created_at),
+      updatedAt: new Date(row.updated_at),
+    };
+  }
+
+  /**
+   * Map domain model to database row
+   */
+  protected mapToDatabase(domain: Partial<ApiCredential>): Partial<any> {
+    const db: any = {};
+    if (domain.id !== undefined) db.id = domain.id;
+    if (domain.credentialName !== undefined) db.credential_name = domain.credentialName;
+    if (domain.displayName !== undefined) db.display_name = domain.displayName;
+    if (domain.description !== undefined) db.description = domain.description;
+    if (domain.provider !== undefined) db.provider = domain.provider;
+    if (domain.apiKey !== undefined) db.api_key = domain.apiKey;
+    if (domain.apiSecret !== undefined) db.api_secret = domain.apiSecret;
+    if (domain.endpointUrl !== undefined) db.endpoint_url = domain.endpointUrl;
+    if (domain.rateLimitPerDay !== undefined) db.rate_limit_per_day = domain.rateLimitPerDay;
+    if (domain.isActive !== undefined) db.is_active = domain.isActive;
+    return db;
+  }
+
   /**
    * Get all API credentials
    */
   async findAll(): Promise<ApiCredential[]> {
-    const client = await this.pool.connect();
+    const client = await getDatabaseClient().connect();
 
     try {
       const result = await client.query<ApiCredential>(
@@ -85,7 +128,7 @@ export class CredentialsRepository extends BaseRepository {
    * Get all active API credentials
    */
   async findActive(): Promise<ApiCredential[]> {
-    const client = await this.pool.connect();
+    const client = await getDatabaseClient().connect();
 
     try {
       const result = await client.query<ApiCredential>(
@@ -116,8 +159,8 @@ export class CredentialsRepository extends BaseRepository {
   /**
    * Get single API credential by ID
    */
-  async findById(id: string): Promise<ApiCredential | null> {
-    const client = await this.pool.connect();
+  override async findById(id: string): Promise<ApiCredential | null> {
+    const client = await getDatabaseClient().connect();
 
     try {
       const result = await client.query<ApiCredential>(
@@ -149,7 +192,7 @@ export class CredentialsRepository extends BaseRepository {
    * Get credential by credential name
    */
   async findByCredentialName(credentialName: string): Promise<ApiCredential | null> {
-    const client = await this.pool.connect();
+    const client = await getDatabaseClient().connect();
 
     try {
       const result = await client.query<ApiCredential>(
@@ -181,7 +224,7 @@ export class CredentialsRepository extends BaseRepository {
    * Get credentials by provider
    */
   async findByProvider(provider: string): Promise<ApiCredential[]> {
-    const client = await this.pool.connect();
+    const client = await getDatabaseClient().connect();
 
     try {
       const result = await client.query<ApiCredential>(
@@ -215,7 +258,7 @@ export class CredentialsRepository extends BaseRepository {
    * NOTE: apiKey and apiSecret should already be encrypted before calling this method
    */
   async create(params: CreateCredentialParams): Promise<ApiCredential> {
-    const client = await this.pool.connect();
+    const client = await getDatabaseClient().connect();
 
     try {
       const result = await client.query<ApiCredential>(
@@ -260,6 +303,10 @@ export class CredentialsRepository extends BaseRepository {
         provider: params.provider,
       });
 
+      if (!result.rows[0]) {
+        throw new Error('Failed to create API credential - no row returned');
+      }
+
       return result.rows[0];
     } finally {
       client.release();
@@ -270,8 +317,8 @@ export class CredentialsRepository extends BaseRepository {
    * Update existing API credential
    * NOTE: If apiKey or apiSecret is provided, it should already be encrypted
    */
-  async update(id: string, params: UpdateCredentialParams): Promise<ApiCredential | null> {
-    const client = await this.pool.connect();
+  override async update(id: string, params: UpdateCredentialParams): Promise<ApiCredential | null> {
+    const client = await getDatabaseClient().connect();
 
     try {
       // Build dynamic SET clause based on provided params
@@ -359,8 +406,8 @@ export class CredentialsRepository extends BaseRepository {
   /**
    * Delete API credential
    */
-  async delete(id: string): Promise<boolean> {
-    const client = await this.pool.connect();
+  override async delete(id: string): Promise<boolean> {
+    const client = await getDatabaseClient().connect();
 
     try {
       const result = await client.query('DELETE FROM api_credentials WHERE id = $1', [id]);
@@ -384,7 +431,7 @@ export class CredentialsRepository extends BaseRepository {
    * Check if credential name exists
    */
   async exists(credentialName: string): Promise<boolean> {
-    const client = await this.pool.connect();
+    const client = await getDatabaseClient().connect();
 
     try {
       const result = await client.query(
@@ -411,5 +458,5 @@ export function getCredentialsRepository(): CredentialsRepository {
   if (!repositoryInstance) {
     repositoryInstance = new CredentialsRepository();
   }
-  return repositoryInstance;
+  return repositoryInstance!;
 }

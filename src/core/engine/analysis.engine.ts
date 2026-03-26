@@ -31,7 +31,6 @@ import {
 import { NativeExecutionStrategy } from '../execution/strategies/native.strategy.js';
 import { HybridExecutionStrategy } from '../execution/strategies/hybrid.strategy.js';
 import { AIExecutionStrategy } from '../execution/strategies/ai.strategy.js';
-import { TaskBasedExecutionStrategy } from '../execution/strategies/task-based.strategy.js';
 import { getAnalyzerRegistry } from './analyzer-registry.js';
 import { getVerdictService } from '../services/verdict.service.js';
 
@@ -575,63 +574,6 @@ export class AnalysisEngine {
     };
   }
 
-  /**
-   * Add execution step
-   */
-  private addExecutionStep(
-    steps: ExecutionStep[],
-    stepName: string,
-    context?: Record<string, unknown>
-  ): void {
-    steps.push({
-      step: stepName,
-      startedAt: new Date(),
-      status: 'started',
-      context,
-    });
-  }
-
-  /**
-   * Complete execution step
-   */
-  private completeExecutionStep(
-    steps: ExecutionStep[],
-    stepName: string,
-    context?: Record<string, unknown>
-  ): void {
-    const step = steps.find((s) => s.step === stepName && s.status === 'started');
-    if (step) {
-      step.completedAt = new Date();
-      step.duration = step.startedAt
-        ? step.completedAt.getTime() - step.startedAt.getTime()
-        : 0;
-      step.status = 'completed';
-      if (context) {
-        step.context = { ...step.context, ...context };
-      }
-    }
-  }
-
-  /**
-   * Fail execution step
-   */
-  private failExecutionStep(
-    steps: ExecutionStep[],
-    stepName: string,
-    context?: Record<string, unknown>
-  ): void {
-    const step = steps.find((s) => s.step === stepName && s.status === 'started');
-    if (step) {
-      step.completedAt = new Date();
-      step.duration = step.startedAt
-        ? step.completedAt.getTime() - step.startedAt.getTime()
-        : 0;
-      step.status = 'failed';
-      if (context) {
-        step.context = { ...step.context, ...context };
-      }
-    }
-  }
 }
 
 /**

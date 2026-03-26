@@ -6,7 +6,7 @@
  */
 
 import { BaseExtractor } from './base.extractor.js';
-import type { NormalizedInput, EmailInput, UrlInput } from '../../../models/input.js';
+import type { NormalizedInput, UrlInput } from '../../../models/input.js';
 import { isEmailInput, isUrlInput } from '../../../models/input.js';
 
 export interface DomainContext {

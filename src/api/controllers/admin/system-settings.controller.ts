@@ -11,10 +11,6 @@ const UpdateSettingSchema = z.object({
   description: z.string().optional(),
 });
 
-const BulkUpdateSchema = z.object({}).catchall(
-  z.union([z.string(), z.number(), z.boolean()])
-);
-
 /**
  * Enhance setting with rich metadata for UI display
  */
@@ -242,7 +238,7 @@ function enhanceSettingMetadata(
  * GET /api/admin/settings - Get all system settings
  */
 export async function getAllSettings(
-  request: FastifyRequest,
+  _request: FastifyRequest,
   reply: FastifyReply
 ): Promise<void> {
   try {
@@ -589,7 +585,7 @@ export async function deleteSetting(
  * GET /api/admin/settings/categories - Get settings grouped by category
  */
 export async function getSettingsByCategory(
-  request: FastifyRequest,
+  _request: FastifyRequest,
   reply: FastifyReply
 ): Promise<void> {
   try {

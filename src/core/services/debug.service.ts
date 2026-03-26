@@ -190,7 +190,7 @@ export class DebugService implements IDebugService {
       if (options.startDate) filters.startDate = options.startDate;
       if (options.endDate) filters.endDate = options.endDate;
 
-      const { total } = await this.analysisRepository.findWithFilters(filters, { limit: 1 });
+      await this.analysisRepository.findWithFilters(filters, { limit: 1 });
 
       return {
         items: analyses,

@@ -44,7 +44,7 @@ const assignAnalyzerToTaskSchema = z.object({
  * List all analyzer definitions
  */
 export async function getAllAnalyzers(
-  request: FastifyRequest,
+  _request: FastifyRequest,
   reply: FastifyReply
 ): Promise<void> {
   try {

@@ -7,13 +7,13 @@ interface Scenario {
   description: string;
 }
 
-interface Props {
-  scenarios: Scenario[];
+interface Props<T extends Scenario> {
+  scenarios: T[];
   selectedId: string | null;
-  onSelect: (scenario: Scenario) => void;
+  onSelect: (scenario: T) => void;
 }
 
-export function ScenarioButtons({ scenarios, selectedId, onSelect }: Props) {
+export function ScenarioButtons<T extends Scenario>({ scenarios, selectedId, onSelect }: Props<T>) {
   const grouped = {
     safe: scenarios.filter(s => s.category === 'safe'),
     suspicious: scenarios.filter(s => s.category === 'suspicious'),

@@ -36,7 +36,7 @@ const updateTaskSchema = z.object({
  * List all task definitions
  */
 export async function getAllTasks(
-  request: FastifyRequest,
+  _request: FastifyRequest,
   reply: FastifyReply
 ): Promise<void> {
   try {

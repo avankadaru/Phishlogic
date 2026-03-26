@@ -79,7 +79,7 @@ export function createLogger(): pino.Logger {
         // Capture log for current step context
         const context = stepContextStorage.getStore();
         if (context?.onLogCapture) {
-          const [logObj, msg, ...rest] = args;
+          const [logObj, msg, ..._rest] = args;
 
           // Determine log level name
           const levelLabel = this.levels.labels[level] as 'debug' | 'info' | 'warn' | 'error';
@@ -108,7 +108,7 @@ export function createLogger(): pino.Logger {
         }
 
         // Continue with normal logging
-        method.apply(this, args);
+        method.apply(this, args as Parameters<typeof method>);
       },
     },
   });

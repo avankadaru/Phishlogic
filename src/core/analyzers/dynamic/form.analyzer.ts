@@ -289,74 +289,13 @@ export class FormAnalyzer extends BaseAnalyzer {
   }
 
   /**
-   * Detect if page is a login page using sophisticated detection
-   * @deprecated Use detectLoginPageWithPage() to avoid double navigation
-   */
-  private async detectLoginPage(
-    url: string,
-    formInfo: {
-      hasSensitiveForms: boolean;
-      formCount: number;
-      sensitiveFields: Array<{ type: string; name: string; label?: string }>;
-    }
-  ) {
-    const browser = await this.getBrowser();
-    const context = await browser.newContext({
-      userAgent:
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    });
-    const page = await context.newPage();
-
-    try {
-      await page.goto(url, {
-        waitUntil: 'domcontentloaded',
-        timeout: NAVIGATION_TIMEOUT,
-      });
-
-      // Extract page content for login detection
-      const bodyText = (await page.textContent('body')) || '';
-      const title = await page.title();
-      const buttons = await page.$$eval('button', (btns) =>
-        btns.map((b) => b.textContent || '')
-      );
-      const links = await page.$$eval('a', (anchors) =>
-        anchors.map((a) => a.textContent || '')
-      );
-      const headings = await page.$$eval('h1, h2, h3', (hdgs) =>
-        hdgs.map((h) => h.textContent || '')
-      );
-
-      // Determine field types from formInfo
-      const fieldTypes = formInfo.sensitiveFields.map((f) => f.type);
-      const formFields = {
-        hasPassword: fieldTypes.includes('password'),
-        hasEmail: fieldTypes.includes('email'),
-        hasMobile: fieldTypes.includes('account') || fieldTypes.includes('username'),
-      };
-
-      // Use login detection service
-      return loginPageDetectionService.detectLoginPage({
-        bodyText,
-        title,
-        buttons,
-        links,
-        headings,
-        formFields,
-      });
-    } finally {
-      await page.close();
-      await context.close();
-    }
-  }
-
-  /**
    * Detect login page using existing Playwright page (no re-navigation)
    * Uses smart wait strategy for dynamic content (embedded forms, iframes, etc.)
    */
   private async detectLoginPageWithPage(
     page: Page,
     url: string,
-    formInfo: {
+    _formInfo: {
       hasSensitiveForms: boolean;
       formCount: number;
       sensitiveFields: Array<{ type: string; name: string; label?: string }>;
@@ -397,7 +336,18 @@ export class FormAnalyzer extends BaseAnalyzer {
         isLoginPage: false,
         authType: 'UNKNOWN',
         confidence: 0,
-        evidence: {},
+        evidence: {
+          keywords: [],
+          oauthProviders: [],
+          ssoProviders: [],
+          hasMobileInput: false,
+          hasPasswordField: false,
+          hasEmailField: false,
+          hasMFA: false,
+          hasCaptcha: false,
+          hasCSRF: false,
+          detectionMethod: [],
+        },
       };
     }
   }

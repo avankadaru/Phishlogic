@@ -129,6 +129,8 @@ export class TaskBasedExecutionStrategy extends BaseExecutionStrategy {
       const result = taskResults[i];
       const taskName = activeTasks[i];
 
+      if (!result || !taskName) continue;
+
       if (result.status === 'fulfilled') {
         const taskResult = result.value;
         allSignals.push(...taskResult.signals);
@@ -143,11 +145,15 @@ export class TaskBasedExecutionStrategy extends BaseExecutionStrategy {
             analyzers: taskResult.analyzersRun,
           },
         });
-      } else {
-        failedTasks.push({ taskName, error: result.reason?.message || 'Unknown error' });
+      } else if (result.status === 'rejected') {
+        const errorMessage =
+          ((result.reason instanceof Error ? result.reason.message : null) ??
+            (result.reason ? String(result.reason) : null)) ||
+          'Unknown error';
+        failedTasks.push({ taskName, error: errorMessage });
 
         this.addExecutionStep(context, `task_${taskName}_failed`, 'failed', {
-          error: result.reason?.message || 'Unknown error',
+          error: errorMessage,
         });
       }
     }
@@ -320,7 +326,7 @@ export class TaskBasedExecutionStrategy extends BaseExecutionStrategy {
   /**
    * Get list of skipped tasks with reasons
    */
-  private getSkippedTasks(content: ExtractedContent, activeTasks: string[]): Array<{ task: string; reason: string }> {
+  private getSkippedTasks(_content: ExtractedContent, activeTasks: string[]): Array<{ task: string; reason: string }> {
     const skipped: Array<{ task: string; reason: string }> = [];
     const allTasks = ['sender_verification', 'attachments', 'links', 'emotional_analysis_urgency', 'images_qrcodes', 'buttons_cta'];
 
@@ -353,7 +359,7 @@ export class TaskBasedExecutionStrategy extends BaseExecutionStrategy {
   /**
    * Execute a single task (run all analyzers for this task in parallel)
    */
-  private async executeTask(taskName: string, content: ExtractedContent, context: ExecutionContext): Promise<TaskResult> {
+  private async executeTask(taskName: string, _content: ExtractedContent, context: ExecutionContext): Promise<TaskResult> {
     const taskStartTime = Date.now();
 
     // Get analyzers for this task

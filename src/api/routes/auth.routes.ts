@@ -21,8 +21,14 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
   // Protected routes (requires authentication)
   fastify.post('/auth/verify', { preHandler: authMiddleware }, verifyAuth);
 
-  // Admin-only routes (requires admin authentication)
-  fastify.post('/admin/keys', { preHandler: [authMiddleware, requireAdmin] }, createApiKey);
-  fastify.get('/admin/keys', { preHandler: [authMiddleware, requireAdmin] }, listApiKeys);
-  fastify.delete('/admin/keys/:id', { preHandler: [authMiddleware, requireAdmin] }, revokeApiKey);
+  // Admin-only API key routes (requires admin authentication)
+  // Use separate scope to apply middleware via hooks (avoids type inference issues)
+  await fastify.register(async (adminScope) => {
+    adminScope.addHook('preHandler', authMiddleware);
+    adminScope.addHook('preHandler', requireAdmin);
+
+    adminScope.post('/admin/keys', createApiKey);
+    adminScope.get('/admin/keys', listApiKeys);
+    adminScope.delete('/admin/keys/:id', revokeApiKey);
+  });
 }

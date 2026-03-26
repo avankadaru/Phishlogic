@@ -161,7 +161,7 @@ export class HTMLStructureExtractor extends BaseExtractor<HTMLStructureAnalysis>
   private extractForms($: any): FormMetadata[] {
     const forms: FormMetadata[] = [];
 
-    $('form').each((_, element) => {
+    $('form').each((_: unknown, element: unknown) => {
       const action = $(element).attr('action');
       const method = $(element).attr('method');
       const inputs: Array<{ type: string; name?: string; id?: string; placeholder?: string }> = [];

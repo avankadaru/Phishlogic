@@ -408,6 +408,9 @@ export class ImageAnalyzer extends BaseAnalyzer {
       }
 
       const base64Data = matches[1];
+      if (!base64Data) {
+        return null;
+      }
       return Buffer.from(base64Data, 'base64');
     } catch {
       return null;

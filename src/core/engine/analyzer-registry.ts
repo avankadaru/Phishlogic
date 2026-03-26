@@ -9,7 +9,6 @@ import type { IAnalyzer } from '../analyzers/base/index.js';
 import type { WhitelistEntry } from '../models/whitelist.js';
 import type { ContentRiskProfile } from '../analyzers/risk/content-risk.analyzer.js';
 import { getLogger } from '../../infrastructure/logging/index.js';
-import { getConfig } from '../../config/app.config.js';
 
 const logger = getLogger();
 

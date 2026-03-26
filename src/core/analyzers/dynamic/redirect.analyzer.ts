@@ -46,10 +46,6 @@ interface ScriptAnalysisResult {
  */
 const MAX_REDIRECTS = 5;
 
-/**
- * Timeout for page navigation (milliseconds)
- */
-const NAVIGATION_TIMEOUT = 10000;
 
 /**
  * Redirect Analyzer

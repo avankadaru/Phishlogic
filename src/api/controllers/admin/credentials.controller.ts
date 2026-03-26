@@ -42,7 +42,7 @@ const idParamSchema = z.object({
  * List all API credentials
  */
 export async function listCredentials(
-  request: FastifyRequest,
+  _request: FastifyRequest,
   reply: FastifyReply
 ): Promise<void> {
   try {
@@ -385,8 +385,8 @@ export async function testCredential(
       });
     }
 
-    // Decrypt API key for testing
-    const decryptedApiKey = decrypt(credential.apiKey);
+    // Decrypt API key to verify it works (throws if invalid)
+    decrypt(credential.apiKey);
 
     // Test based on provider
     // For now, just return success if decryption worked

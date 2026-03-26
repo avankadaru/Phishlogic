@@ -12,7 +12,6 @@
  */
 
 import { BaseExecutionStrategy, ExecutionContext, ExecutionResult } from '../execution-strategy.js';
-import type { AnalysisResult } from '../../models/analysis-result.js';
 import { getLogger, setStepContext, clearStepContext } from '../../../infrastructure/logging/index.js';
 
 const logger = getLogger();
