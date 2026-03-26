@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import api from '@/lib/api';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/Card';
-import type { IntegrationTask, AIModelConfig, TaskAnalyzerMapping, ApiCredential } from '@/types';
+import type { IntegrationTask, AIModelConfig, TaskAnalyzerMapping, ApiCredential, PromptTemplate } from '@/types';
 import AnalyzerConfigSection from '@/components/AnalyzerConfigSection';
 import {
   Settings,
@@ -22,12 +22,14 @@ export default function TasksPage() {
   const [integrationTasks, setIntegrationTasks] = useState<IntegrationTask[]>([]);
   const [aiModels, setAiModels] = useState<AIModelConfig[]>([]);
   const [credentials, setCredentials] = useState<ApiCredential[]>([]);
+  const [promptTemplates, setPromptTemplates] = useState<PromptTemplate[]>([]);
   const [taskAnalyzers, setTaskAnalyzers] = useState<Record<string, TaskAnalyzerMapping[]>>({});
   const [loading, setLoading] = useState(true);
   const [updating, setUpdating] = useState<string | null>(null);
   const [showModelConfig, setShowModelConfig] = useState(false);
   const [showDetails, setShowDetails] = useState<Record<string, boolean>>({});
   const [showAnalyzers, setShowAnalyzers] = useState<Record<string, boolean>>({});
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [addingNewModel, setAddingNewModel] = useState(false);
   const [editingModel, setEditingModel] = useState<AIModelConfig | null>(null);
   const [modelForm, setModelForm] = useState({
@@ -35,15 +37,17 @@ export default function TasksPage() {
     provider: 'anthropic' as 'anthropic' | 'openai' | 'google' | 'custom',
     modelId: '',
     apiKey: '',
-    temperature: 0.3,
-    maxTokens: 4096,
+    temperature: undefined as number | undefined,
+    maxTokens: undefined as number | undefined,
     timeoutMs: 30000,
+    promptTemplateId: undefined as string | undefined,
   });
 
   useEffect(() => {
     loadIntegrationTasks();
     loadAIModels();
     loadCredentials();
+    loadPromptTemplates();
   }, []);
 
   const loadIntegrationTasks = async () => {
@@ -72,6 +76,15 @@ export default function TasksPage() {
       setCredentials(response.data.credentials || []);
     } catch (error) {
       console.error('Failed to load credentials:', error);
+    }
+  };
+
+  const loadPromptTemplates = async () => {
+    try {
+      const response = await api.get('/admin/prompt-templates');
+      setPromptTemplates(response.data.templates || []);
+    } catch (error) {
+      console.error('Failed to load prompt templates:', error);
     }
   };
 
@@ -190,11 +203,12 @@ export default function TasksPage() {
     setModelForm({
       name: model.name,
       provider: model.provider,
-      modelId: model.modelId,
+      modelId: model.modelId || '',
       apiKey: '',
       temperature: model.temperature,
       maxTokens: model.maxTokens,
       timeoutMs: model.timeoutMs,
+      promptTemplateId: model.promptTemplateId,
     });
     setAddingNewModel(true);
   };
@@ -205,10 +219,22 @@ export default function TasksPage() {
       provider: 'anthropic',
       modelId: '',
       apiKey: '',
-      temperature: 0.3,
-      maxTokens: 4096,
+      temperature: undefined,
+      maxTokens: undefined,
       timeoutMs: 30000,
+      promptTemplateId: undefined,
     });
+    setShowAdvanced(false);
+  };
+
+  const getModelIdPlaceholder = (provider: string) => {
+    switch (provider) {
+      case 'anthropic': return 'Default: claude-3-5-sonnet-20241022';
+      case 'openai': return 'Default: gpt-4';
+      case 'google': return 'Default: gemini-1.5-pro';
+      case 'custom': return 'Required for custom providers';
+      default: return 'Model ID';
+    }
   };
 
   const toggleDetails = (taskId: string) => {
@@ -497,14 +523,20 @@ export default function TasksPage() {
                       </select>
                     </div>
                     <div>
-                      <label className="text-xs font-medium block mb-1">Model ID*</label>
+                      <label className="text-xs font-medium block mb-1">
+                        Model ID{modelForm.provider === 'custom' && '*'}
+                        <span className="text-muted-foreground font-normal"> (optional - defaults by provider)</span>
+                      </label>
                       <input
                         type="text"
                         value={modelForm.modelId}
                         onChange={(e) => setModelForm({ ...modelForm, modelId: e.target.value })}
-                        placeholder="claude-3-5-sonnet-20241022"
+                        placeholder={getModelIdPlaceholder(modelForm.provider)}
                         className="w-full border rounded px-2 py-1 text-sm"
                       />
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Leave empty for default model
+                      </p>
                     </div>
                   </div>
                   <div>
@@ -517,37 +549,80 @@ export default function TasksPage() {
                       className="w-full border rounded px-2 py-1 text-sm"
                     />
                   </div>
-                  <div className="grid grid-cols-3 gap-3">
-                    <div>
-                      <label className="text-xs font-medium block mb-1">Temperature</label>
-                      <input
-                        type="number"
-                        step="0.1"
-                        min="0"
-                        max="2"
-                        value={modelForm.temperature}
-                        onChange={(e) => setModelForm({ ...modelForm, temperature: parseFloat(e.target.value) })}
-                        className="w-full border rounded px-2 py-1 text-sm"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-xs font-medium block mb-1">Max Tokens</label>
-                      <input
-                        type="number"
-                        value={modelForm.maxTokens}
-                        onChange={(e) => setModelForm({ ...modelForm, maxTokens: parseInt(e.target.value) })}
-                        className="w-full border rounded px-2 py-1 text-sm"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-xs font-medium block mb-1">Timeout (ms)</label>
-                      <input
-                        type="number"
-                        value={modelForm.timeoutMs}
-                        onChange={(e) => setModelForm({ ...modelForm, timeoutMs: parseInt(e.target.value) })}
-                        className="w-full border rounded px-2 py-1 text-sm"
-                      />
-                    </div>
+
+                  {/* Prompt Template Selector */}
+                  <div>
+                    <label className="text-xs font-medium block mb-1">
+                      Prompt Template
+                      <span className="ml-2 text-xs text-amber-600">⭐ Recommended</span>
+                    </label>
+                    <select
+                      value={modelForm.promptTemplateId || ''}
+                      onChange={(e) => setModelForm({ ...modelForm, promptTemplateId: e.target.value || undefined })}
+                      className="w-full border rounded px-2 py-1 text-sm"
+                    >
+                      <option value="">Use default template</option>
+                      {promptTemplates.map((template) => (
+                        <option key={template.id} value={template.id}>
+                          {template.displayName} - {template.tokenEstimate} tokens (~{(template.accuracyTarget * 100).toFixed(0)}% accuracy)
+                        </option>
+                      ))}
+                    </select>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      <strong>Cost-Efficient</strong>: Fast screening (~$0.70/1k emails, 92% accuracy)
+                      <br /><strong>Balanced</strong> ⭐: Production default (~$1.00/1k, 96% accuracy)
+                      <br /><strong>Comprehensive</strong>: VIP/forensic (~$1.50/1k, 98% accuracy)
+                    </p>
+                  </div>
+
+                  {/* Advanced Settings - Collapsible */}
+                  <div className="border-t pt-3 mt-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowAdvanced(!showAdvanced)}
+                      className="flex items-center justify-between w-full text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                      <span>Advanced Settings (Optional)</span>
+                      <span>{showAdvanced ? '▼' : '▶'}</span>
+                    </button>
+
+                    {showAdvanced && (
+                      <div className="grid grid-cols-3 gap-3 mt-3 pl-3 border-l-2 border-muted">
+                        <div>
+                          <label className="text-xs font-medium block mb-1">Temperature</label>
+                          <input
+                            type="number"
+                            step="0.1"
+                            min="0"
+                            max="2"
+                            value={modelForm.temperature ?? 0.3}
+                            onChange={(e) => setModelForm({ ...modelForm, temperature: parseFloat(e.target.value) || undefined })}
+                            className="w-full border rounded px-2 py-1 text-sm"
+                          />
+                          <p className="text-xs text-muted-foreground mt-0.5">Default: 0.3 (0-2)</p>
+                        </div>
+                        <div>
+                          <label className="text-xs font-medium block mb-1">Max Tokens</label>
+                          <input
+                            type="number"
+                            value={modelForm.maxTokens ?? 4096}
+                            onChange={(e) => setModelForm({ ...modelForm, maxTokens: parseInt(e.target.value) || undefined })}
+                            className="w-full border rounded px-2 py-1 text-sm"
+                          />
+                          <p className="text-xs text-muted-foreground mt-0.5">Default: 4096</p>
+                        </div>
+                        <div>
+                          <label className="text-xs font-medium block mb-1">Timeout (ms)</label>
+                          <input
+                            type="number"
+                            value={modelForm.timeoutMs}
+                            onChange={(e) => setModelForm({ ...modelForm, timeoutMs: parseInt(e.target.value) })}
+                            className="w-full border rounded px-2 py-1 text-sm"
+                          />
+                          <p className="text-xs text-muted-foreground mt-0.5">Default: 30000ms</p>
+                        </div>
+                      </div>
+                    )}
                   </div>
                   <div className="flex justify-end space-x-2 pt-2">
                     <Button
@@ -564,7 +639,12 @@ export default function TasksPage() {
                     <Button
                       size="sm"
                       onClick={handleSaveAIModel}
-                      disabled={!modelForm.name || !modelForm.modelId || (!editingModel && !modelForm.apiKey)}
+                      disabled={
+                        !modelForm.name ||
+                        !modelForm.provider ||
+                        (!editingModel && !modelForm.apiKey) ||
+                        (modelForm.provider === 'custom' && !modelForm.modelId)
+                      }
                     >
                       {editingModel ? 'Update Model' : 'Save Model'}
                     </Button>

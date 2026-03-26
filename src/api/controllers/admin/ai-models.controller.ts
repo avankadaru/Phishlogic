@@ -1,135 +1,83 @@
 import { FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
-import { query } from '../../../infrastructure/database/client.js';
 import { getLogger } from '../../../infrastructure/logging/logger.js';
-import crypto from 'crypto';
+import { getAIModelRepository } from '../../../infrastructure/database/repositories/ai-model.repository.js';
+import { getAIModelService } from '../../../core/services/ai-model.service.js';
+import { sanitizeApiKey } from '../../../infrastructure/encryption/api-key-encryption.js';
 
 const logger = getLogger();
 
-// Encryption configuration
-const ENCRYPTION_KEY = process.env.AI_MODEL_ENCRYPTION_KEY || 'change-me-in-production-32chars';
-const ALGORITHM = 'aes-256-cbc';
-const IV_LENGTH = 16;
-
-/**
- * Encrypt sensitive data (API keys)
- */
-function encrypt(text: string): string {
-  const iv = crypto.randomBytes(IV_LENGTH);
-  const key = crypto.scryptSync(ENCRYPTION_KEY, 'salt', 32);
-  const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
-
-  let encrypted = cipher.update(text, 'utf8', 'hex');
-  encrypted += cipher.final('hex');
-
-  return iv.toString('hex') + ':' + encrypted;
-}
-
-/**
- * Decrypt sensitive data (API keys)
- */
-function decrypt(encrypted: string): string {
-  const parts = encrypted.split(':');
-  const iv = Buffer.from(parts[0], 'hex');
-  const encryptedText = parts[1];
-  const key = crypto.scryptSync(ENCRYPTION_KEY, 'salt', 32);
-  const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
-
-  let decrypted = decipher.update(encryptedText, 'hex', 'utf8');
-  decrypted += decipher.final('utf8');
-
-  return decrypted;
-}
-
-/**
- * Mask API key for display (show first 4 and last 4 characters)
- */
-function maskApiKey(key: string): string {
-  if (key.length <= 8) return '••••••••';
-  return key.substring(0, 4) + '••••••••' + key.substring(key.length - 4);
-}
-
-// Validation schema for AI model configuration
-const AIModelConfigSchema = z.object({
+// Zod validation schemas
+const AIModelConfigCreateSchema = z.object({
   name: z.string().min(1).max(100),
   provider: z.enum(['anthropic', 'openai', 'google', 'custom']),
-  modelId: z.string().min(1).max(200),
+  modelId: z.string().optional(),
   apiKey: z.string().min(1),
-  temperature: z.number().min(0).max(2).default(0.3),
-  maxTokens: z.number().positive().default(4096),
-  timeoutMs: z.number().positive().default(30000),
+  temperature: z.number().min(0).max(2).optional(),
+  maxTokens: z.number().positive().optional(),
+  timeoutMs: z.number().positive().optional(),
+  promptTemplateId: z.string().uuid().optional(),
 });
+
+const AIModelConfigUpdateSchema = AIModelConfigCreateSchema.partial();
+
+/**
+ * AI Models Controller
+ *
+ * SOLID Principles:
+ * - SRP: Only handles HTTP (validation, response formatting)
+ * - DIP: Depends on IAIModelService abstraction
+ *
+ * NO DATABASE CALLS
+ * NO BUSINESS LOGIC
+ *
+ * All business logic delegated to service layer
+ */
 
 /**
  * GET /api/admin/ai-models
  * Get all AI model configurations
  */
-export async function getAIModels(
-  _request: FastifyRequest,
-  reply: FastifyReply
-): Promise<void> {
+export const getAllAIModels = async (_request: FastifyRequest, reply: FastifyReply) => {
   try {
-    const result = await query(`
-      SELECT
-        id,
-        name,
-        provider,
-        model_id as "modelId",
-        api_key as "apiKey",
-        temperature,
-        max_tokens as "maxTokens",
-        timeout_ms as "timeoutMs",
-        created_at as "createdAt",
-        updated_at as "updatedAt",
-        last_used_at as "lastUsedAt",
-        usage_count as "usageCount"
-      FROM ai_model_configs
-      WHERE deleted_at IS NULL
-      ORDER BY name ASC
-    `);
+    const repository = getAIModelRepository();
+    const service = getAIModelService(repository);
 
-    // Mask API keys in response for security
-    const models = result.rows.map(model => ({
+    const models = await service.getAllModels();
+
+    // Mask API keys before sending to frontend
+    const maskedModels = models.map((model) => ({
       ...model,
-      apiKey: maskApiKey(decrypt(model.apiKey))
+      apiKey: sanitizeApiKey(model.apiKey),
     }));
 
     reply.send({
       success: true,
-      data: models,
+      data: maskedModels,
     });
-  } catch (err) {
-    logger.error({ err }, 'Failed to get AI models');
+  } catch (error) {
+    logger.error({ err: error }, 'Failed to fetch AI models');
     reply.status(500).send({
       success: false,
-      error: 'Failed to get AI models',
+      error: 'Failed to fetch AI models',
     });
   }
-}
+};
 
 /**
  * GET /api/admin/ai-models/:id
  * Get specific AI model configuration
  */
-export async function getAIModel(
-  request: FastifyRequest<{ Params: { id: string } }>,
-  reply: FastifyReply
-): Promise<void> {
+export const getAIModelById = async (request: FastifyRequest, reply: FastifyReply) => {
   try {
-    const { id } = request.params;
+    const { id } = request.params as { id: string };
 
-    const result = await query(
-      `SELECT
-        id, name, provider, model_id as "modelId", api_key as "apiKey",
-        temperature, max_tokens as "maxTokens", timeout_ms as "timeoutMs",
-        created_at as "createdAt", updated_at as "updatedAt",
-        last_used_at as "lastUsedAt", usage_count as "usageCount"
-      FROM ai_model_configs
-      WHERE id = $1 AND deleted_at IS NULL`,
-      [id]
-    );
+    const repository = getAIModelRepository();
+    const service = getAIModelService(repository);
 
-    if (result.rows.length === 0) {
+    const model = await service.getModelById(id);
+
+    if (!model) {
       reply.status(404).send({
         success: false,
         error: 'AI model not found',
@@ -137,323 +85,201 @@ export async function getAIModel(
       return;
     }
 
-    const model = result.rows[0];
-    model.apiKey = maskApiKey(decrypt(model.apiKey));
+    // Mask API key before sending to frontend
+    const maskedModel = {
+      ...model,
+      apiKey: sanitizeApiKey(model.apiKey),
+    };
 
     reply.send({
       success: true,
-      data: model,
+      data: maskedModel,
     });
-  } catch (err) {
-    logger.error({ err }, 'Failed to get AI model');
+  } catch (error) {
+    logger.error({ err: error, id: (request.params as any).id }, 'Failed to fetch AI model');
     reply.status(500).send({
       success: false,
-      error: 'Failed to get AI model',
+      error: 'Failed to fetch AI model',
     });
   }
-}
+};
 
 /**
  * POST /api/admin/ai-models
  * Create new AI model configuration
  */
-export async function createAIModel(
-  request: FastifyRequest<{ Body: unknown }>,
-  reply: FastifyReply
-): Promise<void> {
+export const createAIModel = async (request: FastifyRequest, reply: FastifyReply) => {
   try {
-    const data = AIModelConfigSchema.parse(request.body);
+    // HTTP Layer: Input validation
+    const data = AIModelConfigCreateSchema.parse(request.body);
 
-    // Check for duplicate name
-    const existing = await query(
-      'SELECT id FROM ai_model_configs WHERE name = $1 AND deleted_at IS NULL',
-      [data.name]
-    );
+    const repository = getAIModelRepository();
+    const service = getAIModelService(repository);
 
-    if (existing.rows.length > 0) {
+    const result = await service.createModel(data);
+
+    if (!result.success) {
       reply.status(400).send({
         success: false,
-        error: 'Model name already exists. Please choose a different name.',
+        error: result.error,
       });
       return;
     }
 
-    // Encrypt API key before storing
-    const encryptedKey = encrypt(data.apiKey);
+    logger.info({ modelId: result.data?.id, name: result.data?.name }, 'AI model created successfully');
 
-    const result = await query(
-      `INSERT INTO ai_model_configs
-        (name, provider, model_id, api_key, temperature, max_tokens, timeout_ms)
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
-      RETURNING
-        id, name, provider, model_id as "modelId",
-        temperature, max_tokens as "maxTokens", timeout_ms as "timeoutMs",
-        created_at as "createdAt"`,
-      [data.name, data.provider, data.modelId, encryptedKey, data.temperature, data.maxTokens, data.timeoutMs]
-    );
-
-    logger.info({ modelName: data.name, provider: data.provider }, 'AI model created');
-
-    reply.send({
+    reply.status(201).send({
       success: true,
-      message: `AI model "${data.name}" created successfully`,
-      data: result.rows[0],
+      data: result.data,
     });
-  } catch (err) {
-    if (err instanceof z.ZodError) {
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      logger.error({ err: error.errors, body: request.body }, 'Create validation failed');
       reply.status(400).send({
         success: false,
         error: 'Invalid request body',
-        details: err.errors,
+        details: error.errors.map((e) => ({
+          field: e.path.join('.'),
+          message: e.message,
+        })),
       });
       return;
     }
-    logger.error({ err }, 'Failed to create AI model');
+
+    logger.error({ err: error }, 'Failed to create AI model');
     reply.status(500).send({
       success: false,
       error: 'Failed to create AI model',
     });
   }
-}
+};
 
 /**
  * PUT /api/admin/ai-models/:id
  * Update AI model configuration
  */
-export async function updateAIModel(
-  request: FastifyRequest<{ Params: { id: string }; Body: unknown }>,
-  reply: FastifyReply
-): Promise<void> {
+export const updateAIModel = async (request: FastifyRequest, reply: FastifyReply) => {
   try {
-    const { id } = request.params;
-    const data = AIModelConfigSchema.partial().parse(request.body);
+    const { id } = request.params as { id: string };
 
-    // Check if model exists
-    const existingModel = await query(
-      'SELECT id FROM ai_model_configs WHERE id = $1 AND deleted_at IS NULL',
-      [id]
-    );
+    // HTTP Layer: Input validation
+    const data = AIModelConfigUpdateSchema.parse(request.body);
 
-    if (existingModel.rows.length === 0) {
-      reply.status(404).send({
+    const repository = getAIModelRepository();
+    const service = getAIModelService(repository);
+
+    const result = await service.updateModel(id, data);
+
+    if (!result.success) {
+      const statusCode = result.error === 'AI model not found' ? 404 : 400;
+      reply.status(statusCode).send({
         success: false,
-        error: 'AI model not found',
+        error: result.error,
       });
       return;
     }
 
-    // Check for duplicate name if name is being updated
-    if (data.name) {
-      const duplicateName = await query(
-        'SELECT id FROM ai_model_configs WHERE name = $1 AND id != $2 AND deleted_at IS NULL',
-        [data.name, id]
-      );
-
-      if (duplicateName.rows.length > 0) {
-        reply.status(400).send({
-          success: false,
-          error: 'Model name already exists. Please choose a different name.',
-        });
-        return;
-      }
-    }
-
-    // Build dynamic UPDATE query
-    const updates: string[] = [];
-    const values: any[] = [];
-    let paramIndex = 1;
-
-    Object.entries(data).forEach(([key, value]) => {
-      if (key === 'apiKey') {
-        updates.push(`api_key = $${paramIndex}`);
-        values.push(encrypt(value as string));
-      } else {
-        const columnName = key.replace(/([A-Z])/g, '_$1').toLowerCase();
-        updates.push(`${columnName} = $${paramIndex}`);
-        values.push(value);
-      }
-      paramIndex++;
-    });
-
-    if (updates.length === 0) {
-      reply.status(400).send({
-        success: false,
-        error: 'No fields to update',
-      });
-      return;
-    }
-
-    values.push(id);
-
-    const result = await query(
-      `UPDATE ai_model_configs
-       SET ${updates.join(', ')}
-       WHERE id = $${paramIndex} AND deleted_at IS NULL
-       RETURNING
-         id, name, provider, model_id as "modelId",
-         temperature, max_tokens as "maxTokens", timeout_ms as "timeoutMs",
-         updated_at as "updatedAt"`,
-      values
-    );
-
-    logger.info({ modelId: id, updates: Object.keys(data) }, 'AI model updated');
+    logger.info({ modelId: id, updates: Object.keys(data) }, 'AI model updated successfully');
 
     reply.send({
       success: true,
-      message: 'AI model updated successfully',
-      data: result.rows[0],
+      data: result.data,
     });
-  } catch (err) {
-    if (err instanceof z.ZodError) {
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      logger.error({ err: error.errors, body: request.body }, 'Update validation failed');
       reply.status(400).send({
         success: false,
         error: 'Invalid request body',
-        details: err.errors,
+        details: error.errors.map((e) => ({
+          field: e.path.join('.'),
+          message: e.message,
+        })),
       });
       return;
     }
-    logger.error({ err }, 'Failed to update AI model');
+
+    logger.error({ err: error, id: (request.params as any).id }, 'Failed to update AI model');
     reply.status(500).send({
       success: false,
       error: 'Failed to update AI model',
     });
   }
-}
+};
 
 /**
  * DELETE /api/admin/ai-models/:id
- * Delete AI model configuration (soft delete)
+ * Delete AI model configuration
+ * NO DATABASE CALLS - delegates to service
  */
-export async function deleteAIModel(
-  request: FastifyRequest<{ Params: { id: string } }>,
-  reply: FastifyReply
-): Promise<void> {
+export const deleteAIModel = async (request: FastifyRequest, reply: FastifyReply) => {
   try {
-    const { id } = request.params;
+    const { id } = request.params as { id: string };
 
-    // Check if any tasks are using this model
-    const usageCheck = await query(
-      'SELECT COUNT(*) as count FROM task_configs WHERE ai_model_id = $1 AND deleted_at IS NULL',
-      [id]
-    );
+    const repository = getAIModelRepository();
+    const service = getAIModelService(repository);
 
-    if (parseInt(usageCheck.rows[0].count) > 0) {
+    const result = await service.deleteModel(id);
+
+    if (!result.success) {
       reply.status(400).send({
         success: false,
-        error: 'Cannot delete model that is in use by tasks. Please update or disable those tasks first.',
+        error: result.error,
       });
       return;
     }
 
-    // Soft delete
-    const result = await query(
-      'UPDATE ai_model_configs SET deleted_at = NOW() WHERE id = $1 AND deleted_at IS NULL RETURNING name',
-      [id]
-    );
-
-    if (result.rows.length === 0) {
-      reply.status(404).send({
-        success: false,
-        error: 'AI model not found',
-      });
-      return;
-    }
-
-    logger.info({ modelId: id, modelName: result.rows[0].name }, 'AI model deleted');
+    // ✅ Log success ONLY after we know response will succeed
+    logger.info({ id }, 'AI model deleted successfully');
 
     reply.send({
       success: true,
-      message: `AI model "${result.rows[0].name}" deleted successfully`,
+      message: 'AI model deleted successfully',
     });
-  } catch (err) {
-    logger.error({ err }, 'Failed to delete AI model');
+  } catch (error) {
+    logger.error({ err: error, id: (request.params as any).id }, 'Failed to delete AI model');
     reply.status(500).send({
       success: false,
       error: 'Failed to delete AI model',
     });
   }
-}
+};
 
 /**
  * POST /api/admin/ai-models/:id/test
  * Test AI model connection
  */
-export async function testAIModel(
-  request: FastifyRequest<{ Params: { id: string } }>,
-  reply: FastifyReply
-): Promise<void> {
+export const testAIModelConnection = async (request: FastifyRequest, reply: FastifyReply) => {
   try {
-    const { id } = request.params;
+    const { id } = request.params as { id: string };
 
-    const result = await query(
-      'SELECT name, provider, model_id, api_key FROM ai_model_configs WHERE id = $1 AND deleted_at IS NULL',
-      [id]
-    );
+    const repository = getAIModelRepository();
+    const service = getAIModelService(repository);
 
-    if (result.rows.length === 0) {
-      reply.status(404).send({
-        success: false,
-        error: 'AI model not found',
-      });
-      return;
-    }
+    const result = await service.testConnection(id);
 
-    const { name, provider, model_id, api_key } = result.rows[0];
-    const decryptedKey = decrypt(api_key);
-
-    // Basic validation - actual API test can be implemented based on provider
-    // This is a placeholder for the connection test logic
-    if (!decryptedKey || decryptedKey.length < 10) {
+    if (!result.success) {
       reply.status(400).send({
         success: false,
-        error: 'Invalid API key format',
+        error: result.error,
       });
       return;
     }
-
-    // TODO: Implement actual API calls based on provider
-    // For now, just validate the key format
-    let isValid = false;
-    switch (provider) {
-      case 'anthropic':
-        isValid = decryptedKey.startsWith('sk-ant-');
-        break;
-      case 'openai':
-        isValid = decryptedKey.startsWith('sk-');
-        break;
-      case 'google':
-        isValid = decryptedKey.length > 20;
-        break;
-      case 'custom':
-        isValid = true; // Accept any key for custom providers
-        break;
-    }
-
-    if (!isValid) {
-      reply.status(400).send({
-        success: false,
-        error: `API key does not match expected format for ${provider}`,
-      });
-      return;
-    }
-
-    logger.info({ modelId: id, modelName: name, provider }, 'AI model connection test successful');
 
     reply.send({
       success: true,
-      message: `Connection test passed for "${name}" (${provider})`,
-      details: {
-        provider,
-        modelId: model_id,
-        apiKeyFormat: 'Valid',
-      },
+      latency: result.latency,
     });
-  } catch (err) {
-    logger.error({ err }, 'AI model connection test failed');
+  } catch (error) {
+    logger.error({ err: error, id: (request.params as any).id }, 'Failed to test connection');
     reply.status(500).send({
       success: false,
-      error: 'Connection test failed',
-      details: err instanceof Error ? err.message : 'Unknown error',
+      error: 'Failed to test connection',
     });
   }
-}
+};
+
+// For backward compatibility - export functions with different names
+export const getAIModels = getAllAIModels;
+export const getAIModel = getAIModelById;
+export const testAIModel = testAIModelConnection;

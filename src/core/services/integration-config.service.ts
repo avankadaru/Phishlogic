@@ -33,6 +33,7 @@ export interface IntegrationConfig {
   aiModelId?: string;
   aiProvider?: string;
   aiModel?: string;
+  aiApiKey?: string;
   aiTemperature?: number;
   aiMaxTokens?: number;
   aiTimeout?: number;
@@ -93,6 +94,7 @@ export class IntegrationConfigService {
         it.enabled,
         am.provider as ai_provider,
         am.model_id as ai_model,
+        am.api_key as ai_api_key,
         am.temperature as ai_temperature,
         am.max_tokens as ai_max_tokens,
         am.timeout_ms as ai_timeout,
@@ -132,9 +134,11 @@ export class IntegrationConfigService {
       aiModelId: row.ai_model_id,
       aiProvider: row.ai_provider,
       aiModel: row.ai_model,
-      aiTemperature: row.ai_temperature,
-      aiMaxTokens: row.ai_max_tokens,
-      aiTimeout: row.ai_timeout,
+      aiApiKey: row.ai_api_key,
+      // Parse numeric fields (PostgreSQL returns DECIMAL/INTEGER as strings)
+      aiTemperature: row.ai_temperature != null ? parseFloat(row.ai_temperature) : undefined,
+      aiMaxTokens: row.ai_max_tokens != null ? parseInt(row.ai_max_tokens, 10) : undefined,
+      aiTimeout: row.ai_timeout != null ? parseInt(row.ai_timeout, 10) : undefined,
       fallbackToNative: row.fallback_to_native !== false,
       isActive: row.enabled !== false,
       analyzers: row.analyzers || [],
@@ -210,6 +214,7 @@ export class IntegrationConfigService {
         it.enabled,
         am.provider as ai_provider,
         am.model_id as ai_model,
+        am.api_key as ai_api_key,
         am.temperature as ai_temperature,
         am.max_tokens as ai_max_tokens,
         am.timeout_ms as ai_timeout
@@ -231,11 +236,14 @@ export class IntegrationConfigService {
       aiModelId: row.ai_model_id,
       aiProvider: row.ai_provider,
       aiModel: row.ai_model,
-      aiTemperature: row.ai_temperature,
-      aiMaxTokens: row.ai_max_tokens,
-      aiTimeout: row.ai_timeout,
+      aiApiKey: row.ai_api_key,
+      // Parse numeric fields (PostgreSQL returns DECIMAL/INTEGER as strings)
+      aiTemperature: row.ai_temperature != null ? parseFloat(row.ai_temperature) : undefined,
+      aiMaxTokens: row.ai_max_tokens != null ? parseInt(row.ai_max_tokens, 10) : undefined,
+      aiTimeout: row.ai_timeout != null ? parseInt(row.ai_timeout, 10) : undefined,
       fallbackToNative: row.fallback_to_native !== false,
       isActive: row.enabled !== false,
+      analyzers: [],
     }));
   }
 }

@@ -58,6 +58,15 @@ import {
 } from '../controllers/admin/ai-models.controller.js';
 
 import {
+  getPromptTemplates,
+  getPromptTemplate,
+  createPromptTemplate,
+  updatePromptTemplate,
+  deletePromptTemplate,
+  previewPromptTemplate,
+} from '../controllers/admin/prompt-templates.controller.js';
+
+import {
   createSupportRequest,
   getSupportRequests,
   getSupportRequest,
@@ -173,6 +182,14 @@ export async function adminRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.put('/admin/ai-models/:id', updateAIModel);
   fastify.delete('/admin/ai-models/:id', deleteAIModel);
   fastify.post('/admin/ai-models/:id/test', testAIModel);
+
+  // Prompt Templates Routes
+  fastify.get('/admin/prompt-templates', getPromptTemplates);
+  fastify.get('/admin/prompt-templates/:id', getPromptTemplate);
+  fastify.post('/admin/prompt-templates', createPromptTemplate);
+  fastify.put('/admin/prompt-templates/:id', updatePromptTemplate);
+  fastify.delete('/admin/prompt-templates/:id', deletePromptTemplate);
+  fastify.post('/admin/prompt-templates/:id/preview', previewPromptTemplate);
 
   // API Credentials Management Routes
   fastify.get('/admin/credentials', listCredentials);

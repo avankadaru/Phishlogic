@@ -27,6 +27,7 @@ export interface AIService {
     config: {
       provider: string;
       model: string;
+      apiKey: string;
       temperature?: number;
       maxTokens?: number;
       timeout?: number;
@@ -66,12 +67,15 @@ export class AIExecutionStrategy extends BaseExecutionStrategy {
       });
 
       // Validate AI configuration
-      if (!context.config?.aiProvider || !context.config?.aiModel) {
-        const error = new Error('AI execution mode requires AI configuration');
+      if (!context.config?.aiProvider || !context.config?.aiModel || !context.config?.aiApiKey) {
+        const error = new Error('AI execution mode requires AI configuration (provider, model, and API key)');
 
         logger.error({
-          msg: 'AI configuration missing',
+          msg: 'AI configuration incomplete',
           analysisId: context.analysisId,
+          hasProvider: !!context.config?.aiProvider,
+          hasModel: !!context.config?.aiModel,
+          hasApiKey: !!context.config?.aiApiKey,
           error: error.message,
         });
 
@@ -101,6 +105,7 @@ export class AIExecutionStrategy extends BaseExecutionStrategy {
         const aiConfig = {
           provider: context.config.aiProvider,
           model: context.config.aiModel,
+          apiKey: context.config.aiApiKey,
           temperature: context.config.aiTemperature,
           maxTokens: context.config.aiMaxTokens,
           timeout: aiTimeout,
@@ -216,11 +221,12 @@ export class AIExecutionStrategy extends BaseExecutionStrategy {
   canExecute(context: ExecutionContext): boolean {
     // AI strategy requires:
     // 1. AI service available
-    // 2. AI configuration present
+    // 2. AI configuration present (provider, model, and API key)
     return (
       this.aiService !== undefined &&
       !!context.config?.aiProvider &&
-      !!context.config?.aiModel
+      !!context.config?.aiModel &&
+      !!context.config?.aiApiKey
     );
   }
 }

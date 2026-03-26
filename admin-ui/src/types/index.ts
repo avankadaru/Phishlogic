@@ -17,15 +17,30 @@ export interface AIModelConfig {
   id: string;
   name: string;
   provider: 'anthropic' | 'openai' | 'google' | 'custom';
-  modelId: string;
+  modelId?: string; // Optional - backend applies provider defaults
   apiKey: string;
-  temperature: number;
-  maxTokens: number;
+  temperature?: number; // Optional - defaults to 0.3
+  maxTokens?: number; // Optional - defaults to 4096
   timeoutMs: number;
+  promptTemplateId?: string; // Optional - references prompt_templates table
   createdAt: string;
   updatedAt: string;
   lastUsedAt?: string;
   usageCount?: number;
+}
+
+// Prompt Template (for AI analysis configuration)
+export interface PromptTemplate {
+  id: string;
+  name: string;
+  displayName: string;
+  description: string;
+  tokenEstimate: number;
+  costTier: 'cost_efficient' | 'balanced' | 'comprehensive';
+  accuracyTarget: number;
+  scenarioTags: string[];
+  isDefault: boolean;
+  isSystemTemplate: boolean;
 }
 
 // API Credentials (External Services)
