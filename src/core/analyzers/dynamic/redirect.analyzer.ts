@@ -1480,6 +1480,7 @@ export class RedirectAnalyzer extends BaseAnalyzer {
       this.browser = await chromium.launch({
         headless: true,
         args: ['--no-sandbox', '--disable-setuid-sandbox'],
+        timeout: 45000, // 45 seconds - prevent indefinite hangs
       });
 
       logger.info('Playwright browser launched for RedirectAnalyzer');

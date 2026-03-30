@@ -27,6 +27,7 @@ export async function createServer(): Promise<ReturnType<typeof Fastify>> {
     disableRequestLogging: true,
     requestIdHeader: 'x-request-id',
     requestIdLogLabel: 'requestId',
+    requestTimeout: 60000, // 60 seconds - buffer above frontend timeout
   });
 
   // Register helmet for security headers

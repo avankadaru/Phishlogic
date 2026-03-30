@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Link, Loader2, Copy } from 'lucide-react';
 import api from '@/lib/api';
 import { toast } from '@/lib/toast';
+import { formatDuration, formatErrorWithStatus } from '@/lib/utils';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
@@ -33,6 +34,21 @@ export default function UrlTestPage() {
   });
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [loading, setLoading] = useState(false);
+  const [startTime, setStartTime] = useState<number | null>(null);
+  const [elapsed, setElapsed] = useState(0);
+
+  // Timer for showing elapsed time during analysis
+  useEffect(() => {
+    if (!loading || !startTime) {
+      return;
+    }
+
+    const interval = setInterval(() => {
+      setElapsed(Date.now() - startTime);
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [loading, startTime]);
 
   const handleScenarioClick = (scenario: UrlScenario) => {
     setSelectedScenario(scenario.id);
@@ -50,6 +66,7 @@ export default function UrlTestPage() {
     }
 
     setLoading(true);
+    setStartTime(Date.now());
     setResult(null);
 
     try {
@@ -84,9 +101,11 @@ export default function UrlTestPage() {
       });
     } catch (error: any) {
       console.error('Analysis failed:', error);
-      toast.error(error.response?.data?.error || 'Analysis failed. Please try again.');
+      toast.error(formatErrorWithStatus(error));
     } finally {
       setLoading(false);
+      setStartTime(null);
+      setElapsed(0);
     }
   };
 
@@ -220,9 +239,17 @@ export default function UrlTestPage() {
           </CardHeader>
           <CardContent>
             {loading && (
-              <div className="flex flex-col items-center justify-center py-12">
-                <Loader2 className="h-12 w-12 animate-spin text-muted-foreground" />
-                <p className="mt-4 text-sm text-muted-foreground">Analyzing URL...</p>
+              <div className="flex items-center justify-center h-64">
+                <div className="text-center">
+                  <div className="inline-block h-12 w-12 animate-spin rounded-full border-4 border-solid border-current border-r-transparent mb-4"></div>
+                  <p className="text-lg font-medium mb-2">Analyzing URL...</p>
+                  <p className="text-sm text-muted-foreground">
+                    Elapsed time: {formatDuration(elapsed)}
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-2">
+                    This may take up to 50 seconds for complex analysis
+                  </p>
+                </div>
               </div>
             )}
 

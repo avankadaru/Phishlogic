@@ -99,3 +99,41 @@ export function calculateCumulativeTimeForStep(
 
   return new Date(targetStep.completedAt).getTime() - analysisStart;
 }
+
+/**
+ * Extract detailed error message from API error
+ * Follows SOLID principles: Single responsibility - error message extraction
+ */
+export function getApiErrorMessage(error: any): string {
+  // Backend error message
+  if (error.response?.data?.error) {
+    return error.response.data.error;
+  }
+
+  // Backend message field
+  if (error.response?.data?.message) {
+    return error.response.data.message;
+  }
+
+  // Axios timeout
+  if (error.code === 'ECONNABORTED') {
+    return 'Analysis timed out after 50 seconds. The analysis may still be processing. Please check the Debug page for results.';
+  }
+
+  // Generic error message
+  if (error.message) {
+    return error.message;
+  }
+
+  // Fallback
+  return 'Analysis failed. Please try again.';
+}
+
+/**
+ * Format error message with HTTP status if available
+ */
+export function formatErrorWithStatus(error: any): string {
+  const message = getApiErrorMessage(error);
+  const statusInfo = error.response?.status ? ` (${error.response.status})` : '';
+  return `${message}${statusInfo}`;
+}
