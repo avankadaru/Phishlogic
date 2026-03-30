@@ -35,6 +35,7 @@ export interface ExecutionContext {
     aiProvider?: string;
     aiModel?: string;
     aiApiKey?: string;
+    aiPromptTemplateId?: string;
     aiTemperature?: number;
     aiMaxTokens?: number;
     aiTimeout?: number;

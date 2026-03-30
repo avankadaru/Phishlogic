@@ -34,6 +34,7 @@ export interface IntegrationConfig {
   aiProvider?: string;
   aiModel?: string;
   aiApiKey?: string;
+  aiPromptTemplateId?: string;
   aiTemperature?: number;
   aiMaxTokens?: number;
   aiTimeout?: number;
@@ -98,6 +99,7 @@ export class IntegrationConfigService {
         am.temperature as ai_temperature,
         am.max_tokens as ai_max_tokens,
         am.timeout_ms as ai_timeout,
+        am.prompt_template_id as ai_prompt_template_id,
         (
           SELECT json_agg(json_build_object(
             'analyzerName', ia.analyzer_name,
@@ -135,6 +137,7 @@ export class IntegrationConfigService {
       aiProvider: row.ai_provider,
       aiModel: row.ai_model,
       aiApiKey: row.ai_api_key,
+      aiPromptTemplateId: row.ai_prompt_template_id,
       // Parse numeric fields (PostgreSQL returns DECIMAL/INTEGER as strings)
       aiTemperature: row.ai_temperature != null ? parseFloat(row.ai_temperature) : undefined,
       aiMaxTokens: row.ai_max_tokens != null ? parseInt(row.ai_max_tokens, 10) : undefined,
@@ -215,6 +218,7 @@ export class IntegrationConfigService {
         am.provider as ai_provider,
         am.model_id as ai_model,
         am.api_key as ai_api_key,
+        am.prompt_template_id as ai_prompt_template_id,
         am.temperature as ai_temperature,
         am.max_tokens as ai_max_tokens,
         am.timeout_ms as ai_timeout
@@ -237,6 +241,7 @@ export class IntegrationConfigService {
       aiProvider: row.ai_provider,
       aiModel: row.ai_model,
       aiApiKey: row.ai_api_key,
+      aiPromptTemplateId: row.ai_prompt_template_id,
       // Parse numeric fields (PostgreSQL returns DECIMAL/INTEGER as strings)
       aiTemperature: row.ai_temperature != null ? parseFloat(row.ai_temperature) : undefined,
       aiMaxTokens: row.ai_max_tokens != null ? parseInt(row.ai_max_tokens, 10) : undefined,

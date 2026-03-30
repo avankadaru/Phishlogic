@@ -9,6 +9,7 @@ import WhitelistPage from '@/pages/WhitelistPage';
 import DebugPage from '@/pages/DebugPage';
 import SettingsPage from '@/pages/SettingsPage';
 import APIKeysPage from '@/pages/APIKeysPage';
+import { PromptTemplatesPage } from '@/pages/PromptTemplatesPage';
 import ReleaseNotesPage from '@/pages/ReleaseNotesPage';
 import SupportPage from '@/pages/SupportPage';
 import EmailTestPage from '@/pages/EmailTestPage';
@@ -121,6 +122,16 @@ function AppRoutes() {
           <ProtectedRoute>
             <DashboardLayout>
               <APIKeysPage />
+            </DashboardLayout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/prompt-templates"
+        element={
+          <ProtectedRoute>
+            <DashboardLayout>
+              <PromptTemplatesPage />
             </DashboardLayout>
           </ProtectedRoute>
         }

@@ -20,6 +20,7 @@ import {
   Link as LinkIcon,
   ChevronDown,
   ChevronRight,
+  FileText,
 } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 
@@ -49,6 +50,7 @@ const navigation: NavItem[] = [
     ],
   },
   { name: 'API Keys', href: '/api-keys', icon: Key },
+  { name: 'Prompt Templates', href: '/prompt-templates', icon: FileText },
   // Temporarily hidden from UI - keeping code for future use
   // { name: 'Credentials', href: '/credentials', icon: KeyRound },
   { name: 'Settings', href: '/settings', icon: Wrench },

@@ -263,6 +263,7 @@ export class AnalysisEngine {
               aiProvider: integrationConfig.aiProvider,
               aiModel: integrationConfig.aiModel,
               aiApiKey: integrationConfig.aiApiKey,
+              aiPromptTemplateId: integrationConfig.aiPromptTemplateId,
               aiTemperature: integrationConfig.aiTemperature,
               aiMaxTokens: integrationConfig.aiMaxTokens,
               aiTimeout: integrationConfig.aiTimeout,

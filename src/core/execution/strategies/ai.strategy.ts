@@ -28,6 +28,7 @@ export interface AIService {
       provider: string;
       model: string;
       apiKey: string;
+      promptTemplateId?: string;
       temperature?: number;
       maxTokens?: number;
       timeout?: number;
@@ -106,6 +107,7 @@ export class AIExecutionStrategy extends BaseExecutionStrategy {
           provider: context.config.aiProvider,
           model: context.config.aiModel,
           apiKey: context.config.aiApiKey,
+          promptTemplateId: context.config.aiPromptTemplateId,
           temperature: context.config.aiTemperature,
           maxTokens: context.config.aiMaxTokens,
           timeout: aiTimeout,

@@ -28,6 +28,7 @@ export interface AIService {
     config: {
       provider: string;
       model: string;
+      promptTemplateId?: string;
       temperature?: number;
       maxTokens?: number;
       timeout?: number;
@@ -114,6 +115,7 @@ export class HybridExecutionStrategy extends BaseExecutionStrategy {
         const aiConfig = {
           provider: context.config.aiProvider,
           model: context.config.aiModel,
+          promptTemplateId: context.config.aiPromptTemplateId,
           temperature: context.config.aiTemperature,
           maxTokens: context.config.aiMaxTokens,
           timeout: aiTimeout,

@@ -25,6 +25,44 @@ import { query } from '../../infrastructure/database/client.js';
 const logger = getLogger();
 
 /**
+ * Standard JSON output format for AI responses
+ * Ensures consistent parseable structure
+ * This will be enforced at the UI level when creating/editing templates
+ */
+export const STANDARD_JSON_OUTPUT_FORMAT = `
+
+═══════════════════════════════════════════════════════════
+CRITICAL: OUTPUT FORMAT REQUIREMENT
+═══════════════════════════════════════════════════════════
+
+You MUST respond with ONLY a valid JSON array. No text before or after.
+
+Required JSON structure:
+[
+  {
+    "signalType": "suspicious_sender|phishing_keywords|suspicious_url|typosquatting|credential_harvesting|urgent_language|brand_impersonation|attachment_malicious|qrcode_suspicious|...",
+    "severity": "low|medium|high|critical",
+    "confidence": 0.0-1.0,
+    "description": "Plain English explanation of this signal"
+  },
+  {
+    "signalType": "final_verdict",
+    "severity": "low|medium|high|critical",
+    "confidence": 0.0-1.0,
+    "description": "VERDICT: [Safe|Suspicious|Malicious]\\n\\nTHREAT SUMMARY:\\n[2-3 sentences]\\n\\nPRIMARY INDICATORS:\\n- Indicator 1\\n- Indicator 2\\n\\nRECOMMENDED ACTION:\\n[Specific action]"
+  }
+]
+
+IMPORTANT:
+- Response must START with [ and END with ]
+- All strings must be properly escaped
+- Use \\n for line breaks in descriptions
+- Confidence must be between 0.0 and 1.0
+- Include at least one signal (can be just final_verdict if clean)
+- Last signal should always be "final_verdict" with comprehensive description
+`;
+
+/**
  * Prompt Template from Database
  */
 interface PromptTemplate {
@@ -204,7 +242,17 @@ export class AIExecutionService {
       const latencyMs = Date.now() - startTime;
 
       // Parse response to signals
-      const signals = this.parseAnthropicResponse(data.content[0].text, input);
+      let signals = this.parseAnthropicResponse(data.content[0].text, input);
+
+      // FALLBACK: If parsing failed (empty signals), try re-parsing
+      if (signals.length === 0 && data.content[0].text.length > 0) {
+        logger.warn({
+          msg: 'Initial parsing produced zero signals - attempting fallback re-parse',
+          provider: 'anthropic',
+        });
+
+        signals = await this.fallbackReparse(data.content[0].text, config);
+      }
 
       return {
         signals,
@@ -279,7 +327,17 @@ export class AIExecutionService {
       const latencyMs = Date.now() - startTime;
 
       // Parse response to signals
-      const signals = this.parseOpenAIResponse(data.choices[0].message.content, input);
+      let signals = this.parseOpenAIResponse(data.choices[0].message.content, input);
+
+      // FALLBACK: If parsing failed (empty signals), try re-parsing
+      if (signals.length === 0 && data.choices[0].message.content.length > 0) {
+        logger.warn({
+          msg: 'Initial parsing produced zero signals - attempting fallback re-parse',
+          provider: 'openai',
+        });
+
+        signals = await this.fallbackReparse(data.choices[0].message.content, config);
+      }
 
       return {
         signals,
@@ -349,7 +407,16 @@ export class AIExecutionService {
       const latencyMs = Date.now() - startTime;
 
       // Parse response to signals
-      const signals = this.parseGoogleResponse(data.candidates[0].content.parts[0].text, input);
+      let signals = this.parseGoogleResponse(data.candidates[0].content.parts[0].text, input);
+
+      // FALLBACK: If parsing failed (empty signals), try re-parsing
+      // Note: Google fallback not implemented in fallbackReparse method yet
+      if (signals.length === 0 && data.candidates[0].content.parts[0].text.length > 0) {
+        logger.warn({
+          msg: 'Initial parsing produced zero signals - fallback re-parse not supported for Google',
+          provider: 'google',
+        });
+      }
 
       return {
         signals,
@@ -772,6 +839,133 @@ Focus on: domain reputation, entropy, typosquatting, suspicious TLDs, URL patter
       });
 
       // Return empty array on parse failure
+      return [];
+    }
+  }
+
+  /**
+   * Fallback: Re-query AI to convert unstructured response to JSON
+   * Used when initial parsing fails
+   */
+  private async fallbackReparse(
+    originalResponse: string,
+    config: AIProviderConfig
+  ): Promise<AnalysisSignal[]> {
+    logger.warn({
+      msg: 'Attempting fallback re-parsing - sending response back to AI for JSON conversion',
+      provider: config.provider,
+      originalResponseLength: originalResponse.length,
+    });
+
+    try {
+      const reparsePrompt = `Convert the following analysis to the required JSON format.
+
+Original analysis:
+${originalResponse.substring(0, 3000)}
+
+Required JSON format:
+[
+  {
+    "signalType": "string (e.g., suspicious_sender, phishing_keywords, etc.)",
+    "severity": "low|medium|high|critical",
+    "confidence": 0.0-1.0,
+    "description": "string"
+  },
+  {
+    "signalType": "final_verdict",
+    "severity": "low|medium|high|critical",
+    "confidence": 0.0-1.0,
+    "description": "VERDICT: [Safe|Suspicious|Malicious]\\n\\n[Summary of analysis]"
+  }
+]
+
+Extract the key findings and convert to JSON. Response MUST be valid JSON array.`;
+
+      // Make second API call
+      let reparseResponse: string;
+      switch (config.provider.toLowerCase()) {
+        case 'anthropic':
+          const anthropicResponse = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-api-key': config.apiKey,
+              'anthropic-version': '2023-06-01',
+            },
+            body: JSON.stringify({
+              model: config.model,
+              max_tokens: config.maxTokens || 2000,
+              messages: [{ role: 'user', content: reparsePrompt }],
+            }),
+          });
+          const anthropicData: any = await anthropicResponse.json();
+          reparseResponse = anthropicData.content[0].text;
+          break;
+
+        case 'openai':
+          const openaiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${config.apiKey}`,
+            },
+            body: JSON.stringify({
+              model: config.model,
+              messages: [{ role: 'user', content: reparsePrompt }],
+              max_tokens: config.maxTokens || 2000,
+            }),
+          });
+          const openaiData: any = await openaiResponse.json();
+          reparseResponse = openaiData.choices[0].message.content;
+          break;
+
+        default:
+          throw new Error(`Fallback re-parsing not supported for provider: ${config.provider}`);
+      }
+
+      logger.info({
+        msg: 'Fallback re-parsing response received',
+        provider: config.provider,
+        reparseResponseLength: reparseResponse.length,
+      });
+
+      // Try parsing the re-parsed response
+      const jsonMatch = reparseResponse.match(/\[[\s\S]*\]/);
+      if (!jsonMatch) {
+        logger.error({
+          msg: 'Fallback re-parsing also failed to produce valid JSON',
+          provider: config.provider,
+        });
+        return [];
+      }
+
+      const rawSignals = JSON.parse(jsonMatch[0]);
+      const signals = rawSignals.map((signal: any) => ({
+        analyzerName: 'AI',
+        signalType: signal.signalType || 'unknown',
+        severity: this.normalizeSeverity(signal.severity),
+        confidence: Math.max(0, Math.min(1, signal.confidence || 0.5)),
+        description: signal.description || 'No description provided',
+        evidence: {
+          provider: config.provider,
+          rawSignal: signal,
+          fallbackReparse: true,
+        },
+      }));
+
+      logger.info({
+        msg: 'Fallback re-parsing successful',
+        provider: config.provider,
+        signalCount: signals.length,
+      });
+
+      return signals;
+    } catch (error) {
+      logger.error({
+        msg: 'Fallback re-parsing failed completely',
+        provider: config.provider,
+        error: error instanceof Error ? error.message : String(error),
+      });
       return [];
     }
   }
