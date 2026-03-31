@@ -1,0 +1,36 @@
+# Terraform files
+**/.terraform/
+**/.terraform.lock.hcl
+**/terraform.tfstate
+**/terraform.tfstate.*
+**/tfplan
+**/tfplan.*
+**/.terraformrc
+**/terraform.rc
+
+# Sensitive files
+**/terraform.tfvars
+**/*.pem
+**/*.key
+**/*.env
+!**/*.env.example
+
+# Logs
+logs/*.log
+logs/**/*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Backup files
+*.backup
+*.bak
+*.tmp

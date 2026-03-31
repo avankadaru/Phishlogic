@@ -1,0 +1,52 @@
+# PhishLogic Infrastructure Configuration
+# Copy this file to terraform.tfvars and update the secrets
+
+# AWS Configuration (Pre-filled with your account details)
+aws_region     = "us-east-1"
+aws_account_id = "529088285632"
+
+# Project Configuration
+project_name = "phishlogic"
+environment  = "prod"
+
+# Networking Configuration (Defaults - can be customized)
+vpc_cidr             = "10.0.0.0/16"
+availability_zones   = ["us-east-1a", "us-east-1b"]
+public_subnet_cidrs  = ["10.0.1.0/24", "10.0.2.0/24"]
+private_subnet_cidrs = ["10.0.11.0/24", "10.0.12.0/24"]
+
+# Database Configuration
+db_name              = "Phishlogic"
+db_username          = "postgres"
+db_password          = "REPLACE_WITH_GENERATED_SECRET"  # Run: openssl rand -base64 32
+db_instance_class    = "db.t3.small"
+db_allocated_storage = 100
+db_multi_az          = true
+db_backup_retention  = 30
+
+# ECS Configuration
+ecs_task_cpu      = "1024"
+ecs_task_memory   = "2048"
+ecs_desired_count = 2
+ecs_min_capacity  = 1
+ecs_max_capacity  = 10
+
+# Application Configuration
+container_port    = 8080
+health_check_path = "/health"
+cors_origins      = "chrome-extension://*,https://mail.google.com"
+
+# Secrets (Required - generate these)
+jwt_secret           = "REPLACE_WITH_GENERATED_SECRET"  # Run: openssl rand -base64 32
+scim_encryption_key  = "REPLACE_WITH_GENERATED_SECRET"  # Run: openssl rand -base64 32
+
+# Optional: OpenAI API Key
+# openai_api_key = "sk-..."
+
+# Tags
+tags = {
+  Project     = "PhishLogic"
+  Environment = "production"
+  ManagedBy   = "Terraform"
+  Owner       = "DevOps"
+}

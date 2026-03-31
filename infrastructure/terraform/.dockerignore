@@ -1,0 +1,48 @@
+# Node modules
+node_modules/
+npm-debug.log*
+
+# Build artifacts
+dist/
+*.tsbuildinfo
+
+# Tests
+tests/
+coverage/
+*.test.ts
+*.spec.ts
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Development files
+.git/
+.github/
+.vscode/
+.idea/
+*.log
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Admin UI (separate deployment)
+admin-ui/
+
+# Browser extension (separate deployment)
+browser-extension/
+
+# Gmail add-on (separate deployment)
+gmail-addon/
+
+# Infrastructure (not needed in container)
+infrastructure/
+
+# Miscellaneous
+.DS_Store
+*.swp
+*.swo
+*~
