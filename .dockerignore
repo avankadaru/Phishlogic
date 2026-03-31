@@ -1,0 +1,57 @@
+# Node modules (will be installed in container)
+node_modules
+npm-debug.log
+
+# Build output (will be built in container)
+dist
+
+# Tests
+tests
+*.test.ts
+*.spec.ts
+jest.config.js
+coverage
+
+# Development files
+.env
+.env.local
+.env.development
+*.md
+docs
+
+# Admin UI (separate deployment)
+admin-ui
+
+# Browser extension (separate distribution)
+browser-extension
+
+# Gmail Add-on (separate deployment)
+gmail-addon
+
+# Git
+.git
+.gitignore
+.github
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+logs
+*.log
+
+# Scripts
+scripts
+
+# Documentation
+README.md
+LICENSE
+CONTRIBUTING.md
+CHANGELOG.md

@@ -1079,7 +1079,7 @@ Extract the key findings and convert to JSON. Response MUST be valid JSON array.
   ): string {
     // Check for certificate errors in cause message (when no specific error code)
     if (cause && (cause.includes('certificate') || cause.includes('self-signed') || cause.includes('SSL'))) {
-      return `SSL certificate error: ${cause}. This usually means you're behind a corporate proxy. To fix: Set NODE_TLS_REJECT_UNAUTHORIZED=0 in .env (development only) or configure NODE_EXTRA_CA_CERTS with your corporate certificate.`;
+      return `SSL certificate error: ${cause}. This usually means you're behind a corporate proxy with a self-signed certificate. To fix: Configure NODE_EXTRA_CA_CERTS environment variable with your corporate CA certificate. See docs/development/SSL_CONFIGURATION.md for detailed instructions.`;
     }
 
     if (!code) {
@@ -1103,7 +1103,7 @@ Extract the key findings and convert to JSON. Response MUST be valid JSON array.
       case 'UNABLE_TO_VERIFY_LEAF_SIGNATURE':
       case 'DEPTH_ZERO_SELF_SIGNED_CERT':
       case 'SELF_SIGNED_CERT_IN_CHAIN':
-        return `SSL/TLS certificate error: ${cause || 'Certificate validation failed'}. This usually means you're behind a corporate proxy. To fix: Set NODE_TLS_REJECT_UNAUTHORIZED=0 in .env (development only) or configure NODE_EXTRA_CA_CERTS with your corporate certificate.`;
+        return `SSL/TLS certificate error: ${cause || 'Certificate validation failed'}. This usually means you're behind a corporate proxy with a self-signed certificate. To fix: Configure NODE_EXTRA_CA_CERTS environment variable with your corporate CA certificate. See docs/development/SSL_CONFIGURATION.md for detailed instructions.`;
 
       case 'ENETUNREACH':
       case 'EHOSTUNREACH':

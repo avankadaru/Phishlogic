@@ -41,8 +41,9 @@ export function initDatabase(): Pool {
     connectionTimeoutMillis: 5000,
     // Explicitly disable SSL negotiation when SSL is not configured
     // This prevents pg from attempting SSL with servers that don't support it
+    // For corporate CAs, set NODE_EXTRA_CA_CERTS environment variable
     ssl: config.database.ssl ? {
-      rejectUnauthorized: false, // For self-signed certificates in dev
+      rejectUnauthorized: true, // Always validate certificates
     } : false,
   };
 

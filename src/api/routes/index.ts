@@ -17,6 +17,8 @@ import {
 } from '../controllers/whitelist.controller.js';
 import { authRoutes } from './auth.routes.js';
 import { adminRoutes } from './admin.routes.js';
+import { registerScimRoutes } from './scim.routes.js';
+import { registerSSORoutes } from './sso.routes.js';
 // Schemas are validated in controllers
 
 /**
@@ -47,4 +49,10 @@ export async function registerRoutes(server: FastifyInstance): Promise<void> {
 
   // Admin panel routes
   await server.register(adminRoutes, { prefix: '/api' });
+
+  // SCIM 2.0 routes (enterprise provisioning)
+  await registerScimRoutes(server);
+
+  // SSO routes (SAML 2.0 authentication)
+  await registerSSORoutes(server);
 }

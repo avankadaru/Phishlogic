@@ -1,4 +1,5 @@
 // PhishLogic Browser Extension - Popup Script
+// Utilities are loaded from ../utils.js in popup.html
 
 // DOM Elements
 const statusDot = document.getElementById('statusDot');
@@ -63,9 +64,11 @@ async function loadHistory() {
     return;
   }
 
-  // Calculate stats
+  // Calculate stats (exclude errors)
   const stats = history.reduce((acc, item) => {
-    acc[item.verdict.toLowerCase()]++;
+    if (!item.error) {
+      acc[item.verdict.toLowerCase()]++;
+    }
     return acc;
   }, { safe: 0, suspicious: 0, malicious: 0 });
 
@@ -78,15 +81,21 @@ async function loadHistory() {
   historyList.innerHTML = recentHistory
     .map(item => createHistoryItem(item))
     .join('');
+
+  // Add copy button event listeners
+  attachCopyListeners();
 }
 
 // Create history item HTML
 function createHistoryItem(item) {
-  const verdictClass = item.verdict.toLowerCase();
-  const verdictIcon = item.verdict === 'Malicious' ? '🔴' :
+  const verdictClass = item.error ? 'error' : item.verdict.toLowerCase();
+  const verdictIcon = item.error ? '❌' :
+                      item.verdict === 'Malicious' ? '🔴' :
                       item.verdict === 'Suspicious' ? '🟡' : '🟢';
-  const timestamp = new Date(item.timestamp).toLocaleString();
-  const truncatedUrl = truncateUrl(item.url, 50);
+  const timestamp = formatTimestamp(item.timestamp);
+  const truncatedUrl = truncateString(item.url, 50);
+  const analysisIdShort = item.analysisId ? item.analysisId.substring(0, 13) : 'N/A';
+  const processingTimeFormatted = item.processingTime ? formatDuration(item.processingTime) : 'N/A';
 
   return `
     <div class="history-item ${verdictClass}">
@@ -97,23 +106,51 @@ function createHistoryItem(item) {
       </div>
       <div class="url" title="${item.url}">${truncatedUrl}</div>
       <div class="reasoning">${item.reasoning}</div>
-      ${item.redFlags && item.redFlags.length > 0 ? `
+      ${item.redFlags && item.redFlags.length > 0 && !item.error ? `
         <div class="red-flags">
           <strong>Red Flags:</strong>
           <ul>
-            ${item.redFlags.slice(0, 3).map(flag => `<li>${flag.message}</li>`).join('')}
+            ${item.redFlags.slice(0, 3).map(flag => `<li>${flag.message || flag}</li>`).join('')}
           </ul>
         </div>
       ` : ''}
+      <div class="analysis-info">
+        <div class="analysis-id-section">
+          <span class="analysis-id-label">ID:</span>
+          <span class="analysis-id-value" title="${item.analysisId}">${analysisIdShort}...</span>
+          <button class="btn-copy" data-analysis-id="${item.analysisId}" title="Copy Analysis ID">Copy</button>
+        </div>
+        <span class="processing-time">${processingTimeFormatted}</span>
+      </div>
       <div class="timestamp">${timestamp}</div>
     </div>
   `;
 }
 
-// Truncate long URLs
-function truncateUrl(url, maxLength) {
-  if (url.length <= maxLength) return url;
-  return url.substring(0, maxLength - 3) + '...';
+// Attach copy button event listeners
+function attachCopyListeners() {
+  const copyButtons = document.querySelectorAll('.btn-copy');
+  copyButtons.forEach(button => {
+    button.addEventListener('click', async (e) => {
+      const analysisId = e.target.getAttribute('data-analysis-id');
+      const success = await copyToClipboard(analysisId);
+
+      if (success) {
+        e.target.textContent = '✓ Copied!';
+        e.target.classList.add('copied');
+
+        setTimeout(() => {
+          e.target.textContent = 'Copy';
+          e.target.classList.remove('copied');
+        }, 2000);
+      } else {
+        e.target.textContent = '✗ Failed';
+        setTimeout(() => {
+          e.target.textContent = 'Copy';
+        }, 2000);
+      }
+    });
+  });
 }
 
 // Load settings

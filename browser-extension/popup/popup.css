@@ -272,6 +272,67 @@ body {
   text-align: right;
 }
 
+/* Analysis ID and Processing Time */
+.analysis-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #e0e0e0;
+  font-size: 11px;
+}
+
+.analysis-id-section {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.analysis-id-label {
+  color: #666;
+  font-weight: 500;
+}
+
+.analysis-id-value {
+  font-family: 'Courier New', monospace;
+  color: #667eea;
+  font-size: 10px;
+}
+
+.btn-copy {
+  background: #667eea;
+  color: white;
+  border: none;
+  padding: 3px 8px;
+  border-radius: 3px;
+  font-size: 10px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.btn-copy:hover {
+  background: #5568d3;
+}
+
+.btn-copy.copied {
+  background: #4caf50;
+}
+
+.processing-time {
+  color: #666;
+  font-style: italic;
+}
+
+.history-item.error {
+  border-left-color: #f44336;
+  background: #fff5f5;
+}
+
+.history-item.error .verdict-label {
+  color: #f44336;
+}
+
 /* Settings Modal */
 .modal {
   display: none;
