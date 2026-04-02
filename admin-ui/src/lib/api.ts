@@ -1,9 +1,14 @@
 import axios, { AxiosInstance, AxiosError } from 'axios';
 import type { ApiResponse } from '@/types';
 
+// Use production API if VITE_API_BASE_URL is set, otherwise use local proxy
+const baseURL = import.meta.env.VITE_API_BASE_URL
+  ? `${import.meta.env.VITE_API_BASE_URL}/api`
+  : '/api';
+
 // Create axios instance
 const api: AxiosInstance = axios.create({
-  baseURL: '/api',
+  baseURL,
   timeout: 50000, // 50 seconds - increased for analysis requests
   headers: {
     'Content-Type': 'application/json',

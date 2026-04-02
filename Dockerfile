@@ -39,8 +39,8 @@ RUN npm run build
 # ============================================================================
 FROM node:22-alpine AS production
 
-# Install dumb-init for proper signal handling
-RUN apk add --no-cache dumb-init
+# Install dumb-init and curl for proper signal handling and health checks
+RUN apk add --no-cache dumb-init curl
 
 # Create non-root user
 RUN addgroup -g 1001 -S nodejs && \
@@ -53,6 +53,12 @@ COPY --from=dependencies --chown=nodejs:nodejs /app/node_modules ./node_modules
 
 # Copy built application from builder stage
 COPY --from=builder --chown=nodejs:nodejs /app/dist ./dist
+
+# Copy SQL migration files (not compiled by TypeScript)
+COPY --from=builder --chown=nodejs:nodejs /app/src/infrastructure/database/migrations ./dist/infrastructure/database/migrations
+
+# Copy config JSON files (not compiled by TypeScript)
+COPY --from=builder --chown=nodejs:nodejs /app/src/config/*.json ./dist/config/
 
 # Copy package.json for metadata
 COPY --chown=nodejs:nodejs package.json ./

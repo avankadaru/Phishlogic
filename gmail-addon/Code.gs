@@ -6,8 +6,8 @@
  */
 
 // PhishLogic API endpoint
-const PHISHLOGIC_API = 'http://localhost:3000/api/v1/analyze/email';
-// For production: 'https://your-api-domain.run.app/api/v1/analyze/email'
+const PHISHLOGIC_API = 'http://phishlogic-prod-alb-1698854828.us-east-1.elb.amazonaws.com';
+// Note: Using HTTP due to self-signed certificate. HTTPS requires custom domain with ACM certificate.
 
 // ============================================================================
 // UTILITY FUNCTIONS
@@ -141,9 +141,10 @@ function analyzeCurrentEmail(e) {
     Logger.log('Raw email length: ' + rawEmail.length);
 
     // Call PhishLogic API
-    Logger.log('Calling PhishLogic API: ' + PHISHLOGIC_API);
+    var apiEndpoint = PHISHLOGIC_API + '/api/v1/analyze/email';
+    Logger.log('Calling PhishLogic API: ' + apiEndpoint);
 
-    var response = UrlFetchApp.fetch(PHISHLOGIC_API, {
+    var response = UrlFetchApp.fetch(apiEndpoint, {
       method: 'post',
       contentType: 'application/json',
       payload: JSON.stringify({ rawEmail: rawEmail }),
@@ -368,6 +369,50 @@ function buildErrorCard(errorMessage, analysisId, processingTime, statusCode) {
 // ============================================================================
 
 /**
+ * TEST FUNCTION - Track Google Apps Script source IP via webhook.site
+ * Go to https://webhook.site to get a unique URL, then update the URL below
+ */
+function trackSourceIP() {
+  Logger.log('=== Tracking Google Apps Script Source IP ===');
+
+  // REPLACE THIS URL with your unique webhook.site URL
+  var webhookUrl = 'https://webhook.site/YOUR-UNIQUE-ID-HERE';
+
+  try {
+    Logger.log('Calling webhook.site to track IP: ' + webhookUrl);
+
+    var response = UrlFetchApp.fetch(webhookUrl, {
+      method: 'post',
+      contentType: 'application/json',
+      payload: JSON.stringify({
+        timestamp: new Date().toISOString(),
+        message: 'Google Apps Script IP tracking test'
+      }),
+      muteHttpExceptions: true
+    });
+
+    var statusCode = response.getResponseCode();
+    Logger.log('Webhook.site response status: ' + statusCode);
+
+    if (statusCode === 200 || statusCode === 201) {
+      Logger.log('✅ SUCCESS! Check webhook.site dashboard for source IP');
+      Logger.log('The IP address shown in webhook.site is the IP you need to whitelist');
+    } else {
+      Logger.log('❌ ERROR: Webhook returned ' + statusCode);
+    }
+
+  } catch (error) {
+    Logger.log('❌ ERROR: ' + error.toString());
+  }
+
+  Logger.log('=== Tracking Complete ===');
+  Logger.log('Next Steps:');
+  Logger.log('1. Go to webhook.site and check the "IP" field in the request details');
+  Logger.log('2. Add that IP range to AWS security group sg-06a07484058f9c5e1');
+  Logger.log('3. Re-run testAPIConnection() to verify PhishLogic API access');
+}
+
+/**
  * TEST FUNCTION - Tests API connection directly
  */
 function testAPIConnection() {
@@ -387,10 +432,11 @@ function testAPIConnection() {
 
     Logger.log('Sample email length: ' + sampleEmail.length);
     Logger.log('Analysis ID: ' + analysisId);
-    Logger.log('Calling API: ' + PHISHLOGIC_API);
+    var apiEndpoint = PHISHLOGIC_API + '/api/v1/analyze/email';
+    Logger.log('Calling API: ' + apiEndpoint);
 
     // Call PhishLogic API
-    var response = UrlFetchApp.fetch(PHISHLOGIC_API, {
+    var response = UrlFetchApp.fetch(apiEndpoint, {
       method: 'post',
       contentType: 'application/json',
       payload: JSON.stringify({ rawEmail: sampleEmail }),

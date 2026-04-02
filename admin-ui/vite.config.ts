@@ -12,7 +12,9 @@ export default defineConfig({
   },
   server: {
     port: 5173,
-    proxy: {
+    // Only enable proxy if VITE_API_BASE_URL is NOT set (local development)
+    // When VITE_API_BASE_URL is set, admin UI makes direct requests to production
+    proxy: process.env.VITE_API_BASE_URL ? {} : {
       '/api/': {
         target: 'http://localhost:3000',
         changeOrigin: true,

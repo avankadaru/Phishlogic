@@ -15,6 +15,7 @@ import {
   deleteWhitelistEntry,
   getWhitelistStats,
 } from '../controllers/whitelist.controller.js';
+import { runMigrations } from '../controllers/migration.controller.js';
 import { authRoutes } from './auth.routes.js';
 import { adminRoutes } from './admin.routes.js';
 import { registerScimRoutes } from './scim.routes.js';
@@ -27,6 +28,9 @@ import { registerSSORoutes } from './sso.routes.js';
 export async function registerRoutes(server: FastifyInstance): Promise<void> {
   // Health check
   server.get('/health', healthCheck);
+
+  // TEMPORARY: Migration endpoint (DELETE after initial deployment to final production environment)
+  server.post('/api/admin/run-migrations', runMigrations);
 
   // Analysis endpoints
   server.post('/api/v1/analyze/url', analyzeUrl);
