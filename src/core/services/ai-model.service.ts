@@ -124,7 +124,13 @@ export class AIModelService implements IAIModelService {
         }
       }
 
-      const model = await this.repository.update(id, params);
+      // If API key is empty/whitespace, omit it so the existing key is preserved
+      const updateParams = { ...params };
+      if (updateParams.apiKey !== undefined && updateParams.apiKey.trim() === '') {
+        delete updateParams.apiKey;
+      }
+
+      const model = await this.repository.update(id, updateParams);
 
       if (!model) {
         return {

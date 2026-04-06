@@ -20,7 +20,8 @@ export default function DebugPage() {
   const [endDate, setEndDate] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const [totalCount, setTotalCount] = useState(0);
-  const pageSize = 20;
+
+  const pageSize = 10;
 
   // Check if there's an ID in the URL query parameter
   useEffect(() => {

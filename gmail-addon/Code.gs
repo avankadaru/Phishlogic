@@ -116,24 +116,19 @@ function buildAddOn(e) {
  * Analyze current email when user clicks button
  */
 function analyzeCurrentEmail(e) {
-  var analysisId = generateAnalysisId();
   var startTime = new Date().getTime();
 
   try {
     // Get current email using GmailApp service
     var messageId = e.gmail.messageId;
     Logger.log('Starting analysis for message: ' + messageId);
-    Logger.log('Analysis ID: ' + analysisId);
-
-    // Show analyzing card
-    var analyzingCard = buildAnalyzingCard();
 
     // Use GmailApp to get the message (works in add-on context)
     var message = GmailApp.getMessageById(messageId);
 
     if (!message) {
       Logger.log('ERROR: Could not retrieve message');
-      return buildErrorCard('Could not access email message', analysisId, 0);
+      return buildErrorCard('Could not access email message', 'unknown', 0);
     }
 
     // Get raw email content
@@ -152,26 +147,36 @@ function analyzeCurrentEmail(e) {
     });
 
     var statusCode = response.getResponseCode();
-    var processingTime = new Date().getTime() - startTime;
+    var clientElapsed = new Date().getTime() - startTime;
     Logger.log('API response status: ' + statusCode);
-    Logger.log('Processing time: ' + formatDuration(processingTime));
 
     if (statusCode !== 200) {
       var errorMessage = getApiErrorMessage(statusCode, response.getContentText());
       Logger.log('API error response: ' + errorMessage);
-      return buildErrorCard(errorMessage, analysisId, processingTime, statusCode);
+      return buildErrorCard(errorMessage, 'unknown', clientElapsed, statusCode);
     }
 
     var result = JSON.parse(response.getContentText());
-    Logger.log('Analysis result: ' + JSON.stringify(result));
 
-    // Build result card with analysis ID and processing time
+    // Use backend-generated analysis ID (canonical UUID stored in database)
+    var analysisId = (result.metadata && result.metadata.analysisId)
+      ? result.metadata.analysisId
+      : 'unknown';
+
+    // Use backend-reported processing time; fall back to client-side elapsed if absent
+    var processingTime = (result.metadata && result.metadata.duration)
+      ? result.metadata.duration
+      : clientElapsed;
+
+    Logger.log('Analysis ID: ' + analysisId);
+    Logger.log('Processing time: ' + formatDuration(processingTime));
+
     return buildResultCard(result, analysisId, processingTime);
 
   } catch (error) {
-    var processingTime = new Date().getTime() - startTime;
+    var clientElapsed = new Date().getTime() - startTime;
     Logger.log('Analysis error: ' + error.toString());
-    return buildErrorCard(error.toString(), analysisId, processingTime);
+    return buildErrorCard(error.toString(), 'unknown', clientElapsed);
   }
 }
 

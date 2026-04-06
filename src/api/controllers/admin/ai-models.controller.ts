@@ -19,7 +19,16 @@ const AIModelConfigCreateSchema = z.object({
   promptTemplateId: z.string().uuid().optional(),
 });
 
-const AIModelConfigUpdateSchema = AIModelConfigCreateSchema.partial();
+const AIModelConfigUpdateSchema = z.object({
+  name: z.string().min(1).max(100).optional(),
+  provider: z.enum(['anthropic', 'openai', 'google', 'custom']).optional(),
+  modelId: z.string().optional(),
+  apiKey: z.string().optional(), // no min(1) — empty string means "keep existing key"
+  temperature: z.number().min(0).max(2).optional(),
+  maxTokens: z.number().positive().optional(),
+  timeoutMs: z.number().positive().optional(),
+  promptTemplateId: z.string().uuid().optional(),
+});
 
 /**
  * AI Models Controller
