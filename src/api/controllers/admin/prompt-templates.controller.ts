@@ -45,7 +45,7 @@ const PromptTemplateUpdateSchema = PromptTemplateBaseSchema.partial();
 const VALID_VARIABLES = [
   'sender_email', 'sender_domain', 'display_name', 'reply_to', 'subject', 'body',
   'body_snippet', 'body_preview', 'body_truncated', 'spf_status', 'dkim_status',
-  'dmarc_status', 'is_role_account', 'is_disposable', 'domain_age', 'domain_age_days',
+  'dmarc_status', 'auth_guidance', 'auth_verification_note', 'is_role_account', 'is_disposable', 'domain_age', 'domain_age_days',
   'urgency_score', 'urgency_indicators', 'urgency_phrases', 'urgency_detected',
   'link_count', 'links', 'top_links', 'suspicious_links', 'suspicious_links_summary',
   'external_domains', 'all_domains', 'suspicious_domains', 'typosquatting_detected',

@@ -34,6 +34,7 @@ PhishLogic is a modular phishing detection system built with TypeScript and Node
 - [PhishLogic Integration Pattern](.claude/skills/phishlogic-integration.md) - Reusable pattern for adding new integrations
 - [Add Analyzer](.claude/skills/add-analyzer.md) - Add new static or dynamic analyzers to extend phishing detection capabilities
 - [Database Migration](.claude/skills/database-migration.md) - Create and execute database migrations with proper testing, rollback, and deployment procedures
+
 - [Deployment](.claude/skills/deployment.md) - Build, push to ECR, and deploy to AWS ECS production (no-cache, linux/amd64)
 
 ## Quick Reference

@@ -9,6 +9,46 @@ import { resolve } from 'path';
 import { getDatabase } from '../../infrastructure/database/client.js';
 import { getLogger } from '../../infrastructure/logging/logger.js';
 
+/**
+ * Run a single named migration file
+ * POST /api/admin/run-migration
+ * Body: { filename: "017_update_auth_guidance_templates.sql" }
+ */
+export async function runSingleMigration(
+  request: FastifyRequest,
+  reply: FastifyReply
+): Promise<void> {
+  const { filename } = request.body as { filename?: string };
+
+  if (!filename) {
+    reply.status(400).send({ success: false, error: 'filename is required' });
+    return;
+  }
+
+  // Sanitize: only alphanumeric, underscores, hyphens, .sql extension — no path traversal
+  if (!/^[\w-]+\.sql$/.test(filename)) {
+    reply.status(400).send({ success: false, error: 'Invalid filename format' });
+    return;
+  }
+
+  const migrationPath = resolve(
+    process.cwd(),
+    'dist/infrastructure/database/migrations',
+    filename
+  );
+
+  try {
+    const sql = readFileSync(migrationPath, 'utf-8');
+    const db = getDatabase();
+    await db.query(sql);
+    logger.info({ msg: 'Single migration executed successfully', filename });
+    reply.status(200).send({ success: true, filename });
+  } catch (err: any) {
+    logger.error({ err, filename }, 'Single migration failed');
+    reply.status(500).send({ success: false, error: err.message });
+  }
+}
+
 const logger = getLogger();
 
 /**

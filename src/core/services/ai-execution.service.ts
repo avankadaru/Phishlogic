@@ -486,15 +486,55 @@ export class AIExecutionService {
       vars['body_snippet'] = (vars['body'] as string).substring(0, 200);
       vars['body_preview'] = (vars['body'] as string).substring(0, 500);
 
+      // auth_guidance is always set for email inputs so {{auth_guidance}} never renders empty
+      const AUTH_GUIDANCE =
+        'IMPORTANT — Email Authentication Context: SPF/DKIM failures are common on ' +
+        'legitimate emails. Email forwarding changes the sending IP (breaks SPF). ' +
+        'Mailing lists, corporate gateways, and security software that append ' +
+        'disclaimers or footers after signing will break DKIM. ' +
+        'Auth failure alone MUST only contribute to a Suspicious verdict — ' +
+        'never escalate to Malicious without additional corroborating indicators ' +
+        '(credential forms, typosquatting, phishing content, etc.).';
+
+      vars['auth_guidance'] = AUTH_GUIDANCE;
+      vars['auth_verification_note'] = ''; // overwritten below if statuses are missing
+
       // Risk profile data
       if (riskProfile) {
         // Sender info
         if (riskProfile.sender) {
-          vars['spf_status'] = riskProfile.sender.hasAuthentication?.spf || 'unknown';
-          vars['dkim_status'] = riskProfile.sender.hasAuthentication?.dkim || 'unknown';
-          vars['dmarc_status'] = riskProfile.sender.hasAuthentication?.dmarc || 'unknown';
+          const toAuthStatus = (v: boolean | undefined): string =>
+            v === true ? 'pass' : v === false ? 'fail' : 'none';
+
+          const spf   = toAuthStatus(riskProfile.sender.hasAuthentication?.spf);
+          const dkim  = toAuthStatus(riskProfile.sender.hasAuthentication?.dkim);
+          const dmarc = toAuthStatus(riskProfile.sender.hasAuthentication?.dmarc);
+
+          vars['spf_status']  = spf;
+          vars['dkim_status'] = dkim;
+          vars['dmarc_status'] = dmarc;
+
+          const missingAuth = spf === 'none' || dkim === 'none' || dmarc === 'none';
+          if (missingAuth) {
+            vars['auth_verification_note'] =
+              `Note: Some authentication statuses (SPF=${spf}, DKIM=${dkim}, DMARC=${dmarc}) ` +
+              `were not found in email headers. Please verify missing statuses by checking ` +
+              `DNS TXT records and WHOIS data for the sender domain.`;
+
+            logger.info(
+              { spf, dkim, dmarc, senderDomain: riskProfile.sender.domain, authVerificationNote: vars['auth_verification_note'] },
+              'Missing auth statuses — DNS/WHOIS verification note injected into prompt'
+            );
+          }
+
+          // idiomatic Pino: fields in first arg object, message as second arg
+          logger.info(
+            { spf, dkim, dmarc, senderDomain: riskProfile.sender.domain, missingAuth },
+            'Email authentication status for AI analysis'
+          );
+
           vars['is_role_account'] = riskProfile.sender.isRole;
-          vars['is_disposable'] = riskProfile.sender.isDisposable;
+          vars['is_disposable']   = riskProfile.sender.isDisposable;
         }
 
         // Domain info
@@ -664,12 +704,36 @@ Body: ${input.data.parsed?.body?.text || input.data.parsed?.body?.html || 'empty
       if (riskProfile) {
         // Sender context
         if (riskProfile.sender?.email) {
+          const toAuthStatus = (v: boolean | undefined): string =>
+            v === true ? 'pass' : v === false ? 'fail' : 'none';
+
+          const spf   = toAuthStatus(riskProfile.sender.hasAuthentication?.spf);
+          const dkim  = toAuthStatus(riskProfile.sender.hasAuthentication?.dkim);
+          const dmarc = toAuthStatus(riskProfile.sender.hasAuthentication?.dmarc);
+          const missingAuth = spf === 'none' || dkim === 'none' || dmarc === 'none';
+
           prompt += `\n\nSender Profile:
 - Email: ${riskProfile.sender.email} (${riskProfile.sender.domain})
 - Display Name: ${riskProfile.sender.displayName || 'None'}
 - Role Account: ${riskProfile.sender.isRole}
 - Disposable Email: ${riskProfile.sender.isDisposable}
-- Authentication: SPF=${riskProfile.sender.hasAuthentication.spf ?? 'unknown'}, DKIM=${riskProfile.sender.hasAuthentication.dkim ?? 'unknown'}`;
+- Authentication: SPF=${spf}, DKIM=${dkim}, DMARC=${dmarc}
+- Auth Context: SPF/DKIM failures are common on legitimate emails (forwarding breaks SPF; footer injection breaks DKIM). Auth failure alone = Suspicious only — not Malicious.`;
+
+          if (missingAuth) {
+            prompt += ` Statuses marked "none" not in headers — verify via DNS TXT records and WHOIS for ${riskProfile.sender.domain}.`;
+
+            logger.info(
+              { spf, dkim, dmarc, senderDomain: riskProfile.sender.domain },
+              'Missing auth statuses — DNS/WHOIS verification note injected into legacy fallback prompt'
+            );
+          }
+
+          // idiomatic Pino: fields in first arg object, message as second arg
+          logger.info(
+            { spf, dkim, dmarc, senderDomain: riskProfile.sender.domain, missingAuth, promptSection: 'sender_profile' },
+            'Legacy fallback prompt enriched with authentication context'
+          );
         }
 
         // Domain context

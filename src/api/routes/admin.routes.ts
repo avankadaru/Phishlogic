@@ -1,5 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { authMiddleware, requireAdmin } from '../middleware/auth.middleware.js';
+import { runSingleMigration } from '../controllers/migration.controller.js';
 
 // Import controllers
 // Task-config controller removed - replaced with integration-tasks controller
@@ -223,4 +224,7 @@ export async function adminRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.get('/admin/support/stats', getSupportStats);
   fastify.get('/admin/support/:id', getSupportRequest);
   fastify.put('/admin/support/:id', updateSupportRequest);
+
+  // Migration Routes
+  fastify.post('/admin/run-migration', runSingleMigration);
 }
