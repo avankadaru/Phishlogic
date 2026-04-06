@@ -28,6 +28,7 @@ export async function createServer(): Promise<ReturnType<typeof Fastify>> {
     requestIdHeader: 'x-request-id',
     requestIdLogLabel: 'requestId',
     requestTimeout: 60000, // 60 seconds - buffer above frontend timeout
+    bodyLimit: 25 * 1024 * 1024, // 25MB — matches Gmail's max email size (emails with attachments/images)
   });
 
   // Register helmet for security headers

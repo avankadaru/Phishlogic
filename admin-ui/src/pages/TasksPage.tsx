@@ -16,7 +16,49 @@ import {
   Zap,
   Mail,
   Globe,
+  MessageSquare,
+  Linkedin,
+  Hash,
+  Users,
 } from 'lucide-react';
+
+const COMING_SOON_INTEGRATIONS = [
+  {
+    id: 'outlook',
+    displayName: 'Analyse Email from Outlook (Coming Soon)',
+    description: 'Analyze emails received in Microsoft Outlook for phishing threats.',
+    icon: Mail,
+    inputType: 'email',
+  },
+  {
+    id: 'whatsapp',
+    displayName: 'Analyse WhatsApp Messages (Coming Soon)',
+    description: 'Scan WhatsApp messages and shared links for malicious content.',
+    icon: MessageSquare,
+    inputType: 'message',
+  },
+  {
+    id: 'linkedin',
+    displayName: 'Analyse LinkedIn Posts (Coming Soon)',
+    description: 'Detect phishing attempts and suspicious links in LinkedIn posts and messages.',
+    icon: Linkedin,
+    inputType: 'post',
+  },
+  {
+    id: 'slack',
+    displayName: 'Analyse Slack Messages (Coming Soon)',
+    description: 'Inspect Slack messages and shared URLs for phishing indicators.',
+    icon: Hash,
+    inputType: 'message',
+  },
+  {
+    id: 'teams',
+    displayName: 'Analyse Teams Messages (Coming Soon)',
+    description: 'Analyse Microsoft Teams messages and shared files for security threats.',
+    icon: Users,
+    inputType: 'message',
+  },
+];
 
 export default function TasksPage() {
   const [integrationTasks, setIntegrationTasks] = useState<IntegrationTask[]>([]);
@@ -732,7 +774,8 @@ export default function TasksPage() {
             </CardContent>
           </Card>
         ) : (
-          integrationTasks.map((task) => (
+          <>
+          {integrationTasks.map((task) => (
             <Card key={task.id}>
               <CardHeader>
                 <div className="flex items-center justify-between">
@@ -872,7 +915,28 @@ export default function TasksPage() {
                 </div>
               </CardContent>
             </Card>
-          ))
+          ))}
+
+          {/* Coming Soon integrations */}
+          {COMING_SOON_INTEGRATIONS.map((cs) => (
+            <Card key={cs.id} className="opacity-60">
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center space-x-3">
+                    <cs.icon className="w-5 h-5 text-muted-foreground" />
+                    <div>
+                      <CardTitle className="text-muted-foreground">{cs.displayName}</CardTitle>
+                      <CardDescription>{cs.description}</CardDescription>
+                    </div>
+                  </div>
+                  <span className="text-xs font-medium px-2 py-1 rounded-full bg-muted text-muted-foreground border">
+                    Coming Soon
+                  </span>
+                </div>
+              </CardHeader>
+            </Card>
+          ))}
+          </>
         )}
       </div>
     </div>
