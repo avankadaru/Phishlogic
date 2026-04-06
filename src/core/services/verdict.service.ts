@@ -138,7 +138,13 @@ export class VerdictService {
 
     // Stage 7: Generate red flags and action-oriented guidance
     const redFlags = this.generateRedFlags(processedSignals);
-    const reasoning = this.generateActionGuidance(verdict, processedSignals, redFlags);
+
+    // For AI/hybrid analyses, use the final_verdict signal description as reasoning
+    // (contains the AI's detailed threat summary). Fall back to generic guidance otherwise.
+    const finalVerdictSignal = processedSignals.find(s => (s.signalType as string) === 'final_verdict');
+    const reasoning = finalVerdictSignal?.description?.trim()
+      ? finalVerdictSignal.description
+      : this.generateActionGuidance(verdict, processedSignals, redFlags);
 
     // Stage 8: Get actions from signal config (NEW - JSON-driven actions)
     const actions = getVerdictActions(this.signalConfig, verdict);

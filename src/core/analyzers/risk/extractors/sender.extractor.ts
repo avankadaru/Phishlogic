@@ -80,9 +80,10 @@ export class SenderExtractor extends BaseExtractor<SenderProfile> {
     const isDisposable = DISPOSABLE_DOMAINS.some((disposable) => domain.includes(disposable));
 
     // Extract reply-to and return-path from headers
-    const headers = input.data.parsed.headers as any;
-    const replyTo = headers?.['reply-to'] ?? undefined;
-    const returnPath = headers?.['return-path'] ?? undefined;
+    // headers is Map<string, string> — must use .get() not bracket notation
+    const headers = input.data.parsed.headers;
+    const replyTo = headers?.get('reply-to') ?? undefined;
+    const returnPath = headers?.get('return-path') ?? undefined;
 
     // Check authentication headers (if available)
     const hasAuthentication = {
@@ -116,13 +117,13 @@ export class SenderExtractor extends BaseExtractor<SenderProfile> {
   /**
    * Check authentication header
    */
-  private checkAuthenticationHeader(headers: any, type: 'spf' | 'dkim' | 'dmarc'): boolean | undefined {
+  private checkAuthenticationHeader(headers: Map<string, string>, type: 'spf' | 'dkim' | 'dmarc'): boolean | undefined {
     if (!headers) {
       return undefined;
     }
 
-    // Check Authentication-Results header
-    const authResults = headers['authentication-results'];
+    // headers is Map<string, string> — use .get() not bracket notation
+    const authResults = headers.get('authentication-results');
     if (authResults && typeof authResults === 'string') {
       const lowerAuth = authResults.toLowerCase();
 

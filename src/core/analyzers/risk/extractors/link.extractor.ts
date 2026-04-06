@@ -137,7 +137,10 @@ export class LinkExtractor extends BaseExtractor<LinkMetadata[]> {
 
       $('a[href]').each((_, element) => {
         const href = $(element).attr('href');
-        const text = $(element).text().trim();
+        // For icon links (<a><img alt="PayPal"></a>), visible text is empty —
+        // fall back to img alt for brand mismatch detection
+        const text =
+          $(element).text().trim() || $(element).find('img').attr('alt')?.trim() || '';
 
         if (href && text) {
           linkToText.set(href, text);

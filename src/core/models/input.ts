@@ -66,8 +66,11 @@ export interface EmailInput {
     /** Attachments */
     attachments?: Attachment[];
 
-    /** Extracted URLs from email body */
+    /** Extracted URLs from email body (navigation links + img srcs) */
     urls?: string[];
+
+    /** Extracted image URLs (img src + CSS background-image, separate from nav links) */
+    images?: string[];
   };
 }
 

@@ -11,6 +11,7 @@
 
 import { randomUUID } from 'node:crypto';
 import type { NormalizedInput } from '../models/input.js';
+import { isEmailInput } from '../models/input.js';
 import type { AnalysisResult, ExecutionStep } from '../models/analysis-result.js';
 import { getWhitelistService } from '../services/whitelist.service.js';
 import { getLogger, setStepContext, clearStepContext } from '../../infrastructure/logging/index.js';
@@ -114,11 +115,13 @@ export class AnalysisEngine {
     try {
       // Set step context for log capture
       setStepContext(rootStepId, (entry) => stepManager.captureLog(entry));
-      logger.info({
-        msg: 'Analysis request received',
-        analysisId,
-        inputType: input.type,
-      });
+      logger.info({ analysisId, inputType: input.type }, 'Analysis request received');
+
+      // Log parsed email summary inside step context so it appears in debug trace
+      if (isEmailInput(input)) {
+        const ep = input.data.parsed;
+        logger.info({ from: ep.from.address, subject: ep.subject, urlCount: ep.urls?.length ?? 0, imageCount: ep.images?.length ?? 0, hasText: !!ep.body.text, hasHtml: !!ep.body.html, attachmentCount: ep.attachments?.length ?? 0 }, 'Email input parsed');
+      }
 
       // Step 1: Check whitelist - START
       const whitelistStepId = stepManager.startStep({
