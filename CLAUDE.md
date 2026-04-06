@@ -30,7 +30,10 @@ PhishLogic is a modular phishing detection system built with TypeScript and Node
 - [Browser Extension + Gmail Integration](docs/plans/BROWSER_GMAIL_INTEGRATION_PLAN.md) - Complete plan with timeline, code snippets, verification
 
 ### Skills
+- [Architecture Verification](.claude/skills/architecture-verification.md) - Verify clean architecture compliance and repository pattern usage
 - [PhishLogic Integration Pattern](.claude/skills/phishlogic-integration.md) - Reusable pattern for adding new integrations
+- [Add Analyzer](.claude/skills/add-analyzer.md) - Add new static or dynamic analyzers to extend phishing detection capabilities
+- [Database Migration](.claude/skills/database-migration.md) - Create and execute database migrations with proper testing, rollback, and deployment procedures
 
 ## Quick Reference
 
