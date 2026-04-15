@@ -229,7 +229,7 @@ export default function SettingsPage() {
                   checked={getSetting('notifications.email.include_red_flags', true) as boolean}
                   onChange={(e) => updateSetting('notifications.email.include_red_flags', e.target.checked)}
                 />
-                <span className="text-sm">Red Flags Summary (suspicious indicators detected)</span>
+                <span className="text-sm">Signals Summary (suspicious indicators detected)</span>
               </label>
             </div>
             <p className="text-xs text-muted-foreground mt-2">

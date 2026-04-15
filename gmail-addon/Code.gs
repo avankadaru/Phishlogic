@@ -203,6 +203,7 @@ function buildResultCard(result, analysisId, processingTime) {
   var score = result.score;
   var reasoning = result.reasoning;
   var redFlags = result.redFlags || [];
+  var actions = result.actions || [];
 
   // Color and icon based on verdict
   var verdictColor, verdictIcon;
@@ -228,7 +229,7 @@ function buildResultCard(result, analysisId, processingTime) {
 
   // Add red flags section if any
   if (redFlags.length > 0) {
-    var flagsText = '<b><font color="' + verdictColor + '">Red Flags:</font></b><br>';
+    var flagsText = '<b><font color="' + verdictColor + '">Signals:</font></b><br>';
     for (var i = 0; i < Math.min(redFlags.length, 5); i++) {
       var flagMessage = redFlags[i].message || redFlags[i];
       flagsText += '• ' + flagMessage + '<br>';
@@ -241,6 +242,18 @@ function buildResultCard(result, analysisId, processingTime) {
     card.addSection(CardService.newCardSection()
       .addWidget(CardService.newTextParagraph()
         .setText(flagsText)));
+  }
+
+  // Add recommended actions section if any
+  if (actions.length > 0) {
+    var actionsText = '<b><font color="' + verdictColor + '">Recommended Actions:</font></b><br>';
+    for (var i = 0; i < actions.length; i++) {
+      actionsText += '• ' + actions[i] + '<br>';
+    }
+
+    card.addSection(CardService.newCardSection()
+      .addWidget(CardService.newTextParagraph()
+        .setText(actionsText)));
   }
 
   // Add analysis metadata section
@@ -462,9 +475,16 @@ function testAPIConnection() {
       Logger.log('Reasoning: ' + result.reasoning);
 
       if (result.redFlags && result.redFlags.length > 0) {
-        Logger.log('Red Flags: ' + result.redFlags.length);
+        Logger.log('Signals: ' + result.redFlags.length);
         result.redFlags.forEach(function(flag) {
           Logger.log('  - ' + (flag.message || flag));
+        });
+      }
+
+      if (result.actions && result.actions.length > 0) {
+        Logger.log('Recommended Actions: ' + result.actions.length);
+        result.actions.forEach(function(action) {
+          Logger.log('  - ' + action);
         });
       }
     } else {

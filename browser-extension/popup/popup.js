@@ -108,7 +108,7 @@ function createHistoryItem(item) {
       <div class="reasoning">${item.reasoning}</div>
       ${item.redFlags && item.redFlags.length > 0 && !item.error ? `
         <div class="red-flags">
-          <strong>Red Flags:</strong>
+          <strong>Signals:</strong>
           <ul>
             ${item.redFlags.slice(0, 3).map(flag => `<li>${flag.message || flag}</li>`).join('')}
           </ul>

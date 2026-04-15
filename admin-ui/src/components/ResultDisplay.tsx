@@ -84,9 +84,9 @@ export function ResultDisplay({ result }: Props) {
         </div>
       </div>
 
-      {/* Risk Factors */}
+      {/* Signals */}
       <div>
-        <p className="text-sm font-medium mb-2">Risk Factors</p>
+        <p className="text-sm font-medium mb-2">Signals</p>
         {result.redFlags && result.redFlags.length > 0 ? (
           <ul className="space-y-1 bg-muted/50 rounded-md p-3">
             {result.redFlags.map((flag, i) => (
@@ -98,7 +98,7 @@ export function ResultDisplay({ result }: Props) {
           </ul>
         ) : (
           <p className="text-sm text-muted-foreground bg-muted/50 rounded-md p-3">
-            No risk factors detected
+            No signals detected
           </p>
         )}
       </div>

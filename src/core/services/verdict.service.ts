@@ -85,6 +85,72 @@ export class VerdictService {
       };
     }
 
+    // Early check for AI verdict - if present, use it directly and skip native calculations
+    const finalVerdictSignal = signals.find(s => (s.signalType as string) === 'final_verdict');
+
+    if (finalVerdictSignal?.description && finalVerdictSignal.confidence !== undefined) {
+      // AI MODE - Use AI verdict directly
+      logger.info({ msg: 'Using AI verdict directly', signal: finalVerdictSignal });
+
+      // Extract AI verdict from description
+      const verdictMatch = finalVerdictSignal.description.match(/^VERDICT:\s*(\w+)/i);
+      let verdict: Verdict = 'Safe'; // default
+
+      if (verdictMatch && verdictMatch[1]) {
+        const aiVerdictString = verdictMatch[1].toLowerCase();
+        if (aiVerdictString === 'malicious') verdict = 'Malicious';
+        else if (aiVerdictString === 'suspicious') verdict = 'Suspicious';
+        else if (aiVerdictString === 'safe') verdict = 'Safe';
+      }
+
+      // Use AI's confidence directly (0-1 range)
+      const confidence = Math.max(0, Math.min(1, finalVerdictSignal.confidence));
+
+      // Convert to user score (0-10) and percentage (0-100)
+      const score = Math.round(confidence * 100) / 10; // 0-10 with 1 decimal
+      const alertLevel = this.calculateAlertLevel(score, verdict);
+
+      // Generate red flags from top AI signals (exclude final_verdict itself)
+      const aiSignals = signals
+        .filter(s => (s.signalType as string) !== 'final_verdict' && s.analyzerName === 'AI')
+        .sort((a, b) => (b.confidence || 0) - (a.confidence || 0))
+        .slice(0, 5); // Take top 5 highest confidence signals
+
+      const redFlags: RedFlag[] = aiSignals.map(signal => ({
+        message: signal.description || String(signal.signalType),
+        category: this.categorizeSignal(signal.signalType),
+        severity: signal.severity
+      }));
+
+      // Use AI's full description as reasoning
+      const reasoning = finalVerdictSignal.description.trim();
+
+      // Get actions for the verdict (same config-based actions)
+      const actions = getVerdictActions(this.signalConfig, verdict);
+
+      logger.debug({
+        msg: 'AI verdict calculated',
+        verdict,
+        confidence,
+        score,
+        alertLevel,
+        redFlagsCount: redFlags.length,
+        actionsCount: actions.length,
+      });
+
+      // Return early with AI-based result
+      return {
+        verdict,
+        confidence,
+        score,
+        alertLevel,
+        redFlags,
+        reasoning,
+        actions,
+      };
+    }
+
+    // NATIVE MODE - Continue with existing calculation logic
     // Stage 1.5: Process signals with context (NEW - JSON-driven downgrades)
     const processedSignals = this.processSignalsWithContext(signals);
 
@@ -139,12 +205,8 @@ export class VerdictService {
     // Stage 7: Generate red flags and action-oriented guidance
     const redFlags = this.generateRedFlags(processedSignals);
 
-    // For AI/hybrid analyses, use the final_verdict signal description as reasoning
-    // (contains the AI's detailed threat summary). Fall back to generic guidance otherwise.
-    const finalVerdictSignal = processedSignals.find(s => (s.signalType as string) === 'final_verdict');
-    const reasoning = finalVerdictSignal?.description?.trim()
-      ? finalVerdictSignal.description
-      : this.generateActionGuidance(verdict, processedSignals, redFlags);
+    // For native mode, generate action guidance
+    const reasoning = this.generateActionGuidance(verdict, processedSignals, redFlags);
 
     // Stage 8: Get actions from signal config (NEW - JSON-driven actions)
     const actions = getVerdictActions(this.signalConfig, verdict);

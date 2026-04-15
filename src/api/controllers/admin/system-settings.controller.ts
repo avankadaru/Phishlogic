@@ -50,7 +50,7 @@ function enhanceSettingMetadata(
 
     'notifications.email.include_red_flags': {
       ...base,
-      helpText: 'Include the list of detected security issues and suspicious indicators found during analysis.',
+      helpText: 'Include the list of detected security signals and suspicious indicators found during analysis.',
       useCases: ['Understand why email was flagged', 'Learn about attack techniques', 'Share threat intelligence with team'],
       examples: 'Suspicious sender domain, Urgency language, Multiple external links, Credential harvesting form',
       bestPractices: 'Enable for security awareness and training opportunities.',

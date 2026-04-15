@@ -1,10 +1,8 @@
 import axios, { AxiosInstance, AxiosError } from 'axios';
 import type { ApiResponse } from '@/types';
 
-// Use production API if VITE_API_BASE_URL is set, otherwise use local proxy
-const baseURL = import.meta.env.VITE_API_BASE_URL
-  ? `${import.meta.env.VITE_API_BASE_URL}/api`
-  : '/api';
+// Always use /api - the proxy will forward to the right backend
+const baseURL = '/api';
 
 // Create axios instance
 const api: AxiosInstance = axios.create({

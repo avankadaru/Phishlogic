@@ -267,7 +267,7 @@ export class EmailService {
 
     const redFlagsHtml = result.redFlags.length > 0
       ? `
-        <h3>🚩 Red Flags:</h3>
+        <h3>⚠️ Signals:</h3>
         <ul>
           ${result.redFlags.map((flag) => `<li><strong>[${flag.category}]</strong> ${flag.message}</li>`).join('')}
         </ul>
@@ -337,7 +337,7 @@ export class EmailService {
         : '';
 
     const redFlagsText = result.redFlags.length > 0
-      ? `\nRed Flags:\n${result.redFlags.map((flag) => `  - [${flag.category}] ${flag.message}`).join('\n')}`
+      ? `\nSignals:\n${result.redFlags.map((flag) => `  - [${flag.category}] ${flag.message}`).join('\n')}`
       : '';
 
     return `
