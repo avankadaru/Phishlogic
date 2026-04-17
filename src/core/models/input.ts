@@ -33,6 +33,11 @@ export interface UrlInput {
   context?: {
     referrer?: string;
     userAgent?: string;
+    /**
+     * Optional HTML fragment from a client (e.g. browser extension) for URL prescan only.
+     * Parsed with the same structure rules as email HTML (forms, scripts, iframes).
+     */
+    pageHtmlSnippet?: string;
   };
 }
 
@@ -98,6 +103,18 @@ export interface NormalizedInput {
 
   /** Optional risk profile from pre-scan extractors (for analyzer consumption) */
   riskProfile?: any; // Import type will be added to avoid circular dependency
+
+  /**
+   * Optional integration name (e.g. `gmail`, `chrome`, `chrome_task2`).
+   * When unset, the engine derives it from the input type.
+   * Integration config for this name is the source of truth for pipeline policy.
+   */
+  integrationName?: string;
+
+  /**
+   * Optional override for native/hybrid/ai (e.g. admin URL test page). When unset, integration DB config is used.
+   */
+  executionModeOverride?: 'native' | 'hybrid' | 'ai';
 }
 
 /**

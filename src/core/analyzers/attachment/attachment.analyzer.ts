@@ -39,17 +39,87 @@ interface FileAnalysisResult {
  * Analyzes email attachments using file type detection and heuristics
  */
 export class AttachmentAnalyzer extends BaseAnalyzer {
-  // Dangerous file extensions (executables, scripts, macros)
+  // Dangerous file extensions (executables, scripts, macros, rising-threat droppers)
   private readonly dangerousExtensions = new Set([
     '.exe', '.dll', '.scr', '.com', '.bat', '.cmd', '.ps1',
     '.vbs', '.vbe', '.js', '.jse', '.wsf', '.wsh',
     '.msi', '.msp', '.pif', '.cpl',
     '.docm', '.xlsm', '.pptm', '.dotm', '.xltm', '.potm',
     '.jar', '.app', '.deb', '.rpm',
+    // Rising-threat malware droppers (2023-2026)
+    '.lnk', '.hta', '.chm',
   ]);
 
-  // Note: suspiciousExtensions and safeMimeTypes removed as unused
-  // Future enhancement: Can be re-added for more sophisticated validation
+  // High-risk suspicious extensions — credential harvesters and script-in-image carriers.
+  // These push verdict toward Suspicious via weighted calc; they do NOT auto-Malicious.
+  private readonly highRiskSuspiciousExtensions = new Set([
+    '.html', '.htm', '.xhtml', // HTML phishing pages as attachments
+    '.svg',                     // SVG can embed JavaScript
+    '.one',                     // OneNote - used in malspam
+    '.vhd', '.vhdx',            // disk images
+  ]);
+
+  // Phishing-impersonation filename heuristics. Matching is done against a
+  // normalized filename where `_` and `-` are converted to spaces so that
+  // word-boundary matching works across attacker-favored separators (e.g.
+  // `invoice_amazon_secure`). Single-word matches are detected explicitly.
+  private readonly phishingFilenameKeywords: Array<{ label: string; words: string[] }> = [
+    {
+      label: 'financial',
+      words: ['invoice', 'remittance', 'receipt', 'purchase order', 'wire', 'payment'],
+    },
+    { label: 'e-signature brand', words: ['docusign', 'adobe sign', 'adobesign', 'hellosign'] },
+    {
+      label: 'microsoft brand',
+      words: ['microsoft', 'office365', 'outlook', 'onedrive', 'sharepoint', 'teams'],
+    },
+    {
+      label: 'cloud brand alert',
+      words: [
+        'amazon security',
+        'amazon account',
+        'amazon alert',
+        'amazon notice',
+        'paypal security',
+        'paypal account',
+        'paypal alert',
+        'paypal notice',
+        'apple security',
+        'apple account',
+        'apple alert',
+        'apple notice',
+        'google security',
+        'google account',
+        'google alert',
+        'google notice',
+      ],
+    },
+    {
+      label: 'legal threat',
+      words: ['court', 'legal', 'subpoena', 'lawsuit'],
+    },
+    {
+      label: 'urgency wrapper',
+      words: [
+        'secure document',
+        'secure file',
+        'secure message',
+        'urgent document',
+        'urgent file',
+        'urgent message',
+        'confidential document',
+        'confidential file',
+        'confidential message',
+        'important document',
+        'important file',
+        'important message',
+      ],
+    },
+    { label: 'voicemail/fax lure', words: ['voicemail', 'fax', 'scan'] },
+    // Brand-only matches (single token) — narrower than broad brand lists to
+    // avoid false positives in legitimate filenames.
+    { label: 'brand bare', words: ['amazon', 'paypal', 'docusign'] },
+  ];
 
   getName(): string {
     return 'AttachmentAnalyzer';
@@ -126,6 +196,24 @@ export class AttachmentAnalyzer extends BaseAnalyzer {
               })
             );
           }
+        }
+
+        // Brand/urgency filename heuristic — fires regardless of extension severity
+        const phishingMatches = this.matchPhishingPatterns(metadata.filename);
+        if (phishingMatches.length > 0) {
+          signals.push(
+            this.createSignal({
+              signalType: 'attachment_phishing_pattern',
+              severity: 'high',
+              confidence: 0.85,
+              description: `Attachment filename matches phishing impersonation patterns: ${metadata.filename} (${phishingMatches.map((m) => m.label).join(', ')})`,
+              evidence: {
+                filename: metadata.filename,
+                patterns: phishingMatches.map((m) => m.label),
+                matchedTerms: phishingMatches.map((m) => m.matched),
+              },
+            })
+          );
         }
       }
 
@@ -213,6 +301,24 @@ export class AttachmentAnalyzer extends BaseAnalyzer {
             })
           );
         }
+
+        // Brand/urgency filename heuristic (independent of extension)
+        const phishingMatches = this.matchPhishingPatterns(analysis.filename);
+        if (phishingMatches.length > 0) {
+          signals.push(
+            this.createSignal({
+              signalType: 'attachment_phishing_pattern',
+              severity: 'high',
+              confidence: 0.85,
+              description: `Attachment filename matches phishing impersonation patterns: ${analysis.filename} (${phishingMatches.map((m) => m.label).join(', ')})`,
+              evidence: {
+                filename: analysis.filename,
+                patterns: phishingMatches.map((m) => m.label),
+                matchedTerms: phishingMatches.map((m) => m.matched),
+              },
+            })
+          );
+        }
       }
     }
 
@@ -222,6 +328,45 @@ export class AttachmentAnalyzer extends BaseAnalyzer {
     });
 
     return signals;
+  }
+
+  /**
+   * Match a filename against the phishing-impersonation keyword list. We
+   * normalize `_`/`-`/`.` to spaces so `\b` matches across attacker separators,
+   * then look for each phrase as a whole word. Brand-bare keywords are only
+   * flagged when combined with an action/urgency token in the filename.
+   */
+  private matchPhishingPatterns(
+    filename: string
+  ): Array<{ label: string; matched: string }> {
+    const matches: Array<{ label: string; matched: string }> = [];
+    const normalized = filename
+      .toLowerCase()
+      .replace(/[_\-.]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    const hasActionContext =
+      /\b(secure|urgent|confidential|important|alert|notice|invoice|document|file|message|update|verify|login|account)\b/.test(
+        normalized
+      );
+
+    for (const { label, words } of this.phishingFilenameKeywords) {
+      for (const word of words) {
+        const pattern = new RegExp(
+          `\\b${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`,
+          'i'
+        );
+        if (pattern.test(normalized)) {
+          if (label === 'brand bare' && !hasActionContext) {
+            continue;
+          }
+          matches.push({ label, matched: word });
+          break; // one match per label is enough
+        }
+      }
+    }
+    return matches;
   }
 
   /**
@@ -278,6 +423,15 @@ export class AttachmentAnalyzer extends BaseAnalyzer {
       result.threatLevel = 'suspicious';
       result.suspicious = true;
       result.reasons.push('Disk image file');
+    }
+
+    // High-risk suspicious extensions: HTML credential harvesters, SVG-with-JS, OneNote, VHD
+    if (this.highRiskSuspiciousExtensions.has(declaredExt)) {
+      if (result.threatLevel === 'clean') {
+        result.threatLevel = 'suspicious';
+      }
+      result.suspicious = true;
+      result.reasons.push(`High-risk attachment type (${declaredExt})`);
     }
 
     // Check for double extensions (e.g., invoice.pdf.exe)

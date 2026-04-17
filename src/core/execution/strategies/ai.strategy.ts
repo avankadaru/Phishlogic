@@ -32,6 +32,10 @@ export interface AIService {
       temperature?: number;
       maxTokens?: number;
       timeout?: number;
+      /** Enriches logs on legacy-prompt fallback */
+      aiModelId?: string;
+      /** Enriches logs on legacy-prompt fallback */
+      integrationName?: string;
     },
     riskProfile?: EnhancedContentRiskProfile
   ): Promise<{
@@ -111,6 +115,8 @@ export class AIExecutionStrategy extends BaseExecutionStrategy {
           temperature: context.config.aiTemperature,
           maxTokens: context.config.aiMaxTokens,
           timeout: aiTimeout,
+          aiModelId: context.config.aiModelId,
+          integrationName: context.integrationName,
         };
 
         const aiResult = await this.executeWithTimeout(

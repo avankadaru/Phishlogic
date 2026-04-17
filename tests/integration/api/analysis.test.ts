@@ -141,6 +141,69 @@ describe('Analysis API', () => {
 
       expect(response.statusCode).toBe(400);
     });
+
+    it('should accept optional executionMode without 400', async () => {
+      const response = await server.inject({
+        method: 'POST',
+        url: '/api/v1/analyze/url',
+        payload: {
+          url: 'https://www.google.com',
+          executionMode: 'native',
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+    });
+
+    it('should accept optional integrationName without 400', async () => {
+      const response = await server.inject({
+        method: 'POST',
+        url: '/api/v1/analyze/url',
+        payload: {
+          url: 'https://www.google.com',
+          integrationName: 'chrome',
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.metadata).toBeDefined();
+    });
+
+    it('should reject empty integrationName', async () => {
+      const response = await server.inject({
+        method: 'POST',
+        url: '/api/v1/analyze/url',
+        payload: {
+          url: 'https://www.google.com',
+          integrationName: '',
+        },
+      });
+
+      expect(response.statusCode).toBe(400);
+    });
+
+    it('should flag known brand typosquat and not emit email-auth analyzer signals', async () => {
+      const response = await server.inject({
+        method: 'POST',
+        url: '/api/v1/analyze/url',
+        payload: {
+          url: 'https://www.paypa1.com/webapps/mpp/home',
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      const typosquat = body.signals.find(
+        (s: { signalType: string }) => s.signalType === 'typosquat_hostname'
+      );
+      expect(typosquat).toBeDefined();
+
+      const emailAuth = body.signals.filter((s: { analyzerName?: string }) =>
+        ['SpfAnalyzer', 'DkimAnalyzer', 'SenderReputationAnalyzer'].includes(String(s.analyzerName))
+      );
+      expect(emailAuth.length).toBe(0);
+    });
   });
 
   describe('POST /api/v1/analyze/email', () => {

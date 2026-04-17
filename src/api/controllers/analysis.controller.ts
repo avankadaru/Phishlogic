@@ -12,12 +12,16 @@ import {
   SpfAnalyzer,
   DkimAnalyzer,
 } from '../../core/analyzers/static/index.js';
+import { UrlEntropyUrlAnalyzer } from '../../core/analyzers/static/url-entropy.url.analyzer.js';
 import {
   RedirectAnalyzer,
   FormAnalyzer,
 } from '../../core/analyzers/dynamic/index.js';
+import { RedirectUrlAnalyzer } from '../../core/analyzers/dynamic/redirect.url.analyzer.js';
+import { FormUrlAnalyzer } from '../../core/analyzers/dynamic/form.url.analyzer.js';
 import { SenderReputationAnalyzer } from '../../core/analyzers/reputation/sender-reputation.analyzer.js';
 import { LinkReputationAnalyzer } from '../../core/analyzers/reputation/link-reputation.analyzer.js';
+import { LinkReputationUrlAnalyzer } from '../../core/analyzers/reputation/link-reputation.url.analyzer.js';
 import { ContentAnalysisAnalyzer } from '../../core/analyzers/ml/content-analysis.analyzer.js';
 import { AttachmentAnalyzer } from '../../core/analyzers/attachment/attachment.analyzer.js';
 import { ButtonAnalyzer } from '../../core/analyzers/content/button.analyzer.js';
@@ -58,8 +62,22 @@ const dynamicAnalyzers = [
   new FormAnalyzer(),
 ];
 
+// URL-task specialized analyzer subclasses. Registered alongside the base
+// email-first analyzers; `AnalyzerRegistry.selectInspectUrlAnalyzers`
+// prefers these when `getSupportedPrescanModes()` includes 'url'.
+const urlSpecializedAnalyzers = [
+  new UrlEntropyUrlAnalyzer(),
+  new LinkReputationUrlAnalyzer(),
+  new RedirectUrlAnalyzer(whitelistService, loginPageDetectionService),
+  new FormUrlAnalyzer(),
+];
+
 // Register analyzers (used by NativeExecutionStrategy)
-analyzerRegistry.registerMany([...staticAnalyzers, ...dynamicAnalyzers]);
+analyzerRegistry.registerMany([
+  ...staticAnalyzers,
+  ...dynamicAnalyzers,
+  ...urlSpecializedAnalyzers,
+]);
 
 // Get singleton engine instance (strategies are initialized in constructor)
 const engine = getAnalysisEngine();
@@ -91,6 +109,12 @@ export async function analyzeUrl(
     // Pass through analysis ID and UI timestamp from request
     normalizedInput.analysisId = request.body.analysisId;
     normalizedInput.uiTimestamp = request.body.uiTimestamp;
+    if (request.body.executionMode) {
+      normalizedInput.executionModeOverride = request.body.executionMode;
+    }
+    if (request.body.integrationName) {
+      normalizedInput.integrationName = request.body.integrationName;
+    }
 
     // Analyze
     const result = await engine.analyze(normalizedInput);
@@ -142,6 +166,12 @@ export async function analyzeEmail(
     // Pass through analysis ID and UI timestamp from request
     normalizedInput.analysisId = request.body.analysisId;
     normalizedInput.uiTimestamp = request.body.uiTimestamp;
+    if (request.body.executionMode) {
+      normalizedInput.executionModeOverride = request.body.executionMode;
+    }
+    if (request.body.integrationName) {
+      normalizedInput.integrationName = request.body.integrationName;
+    }
 
     // Analyze
     const result = await engine.analyze(normalizedInput);

@@ -84,6 +84,9 @@ export async function runMigrations(
       '014_update_chrome_integration.sql',
       '015_prompt_templates.sql',
       '016_enterprise_features.sql',
+      '017_update_auth_guidance_templates.sql',
+      '018_url_inspection_prompt_template.sql',
+      '019_add_integration_pipeline_policy.sql',
     ];
 
     const results: Array<{ file: string; status: string; error?: string }> = [];

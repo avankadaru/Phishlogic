@@ -18,6 +18,7 @@ import { isEmailInput } from '../../models/input.js';
 import { getLogger } from '../../../infrastructure/logging/index.js';
 import * as natural from 'natural';
 import Sentiment from 'sentiment';
+import { detectUrgencyLanguage as detectUrgencyLanguageImpl } from './urgency-detector.js';
 
 const logger = getLogger();
 
@@ -201,12 +202,55 @@ export class ContentAnalysisAnalyzer extends BaseAnalyzer {
       );
     }
 
+    // Deterministic urgency-language detector — complements ML sentiment.
+    // Fires when subject contains a hard-urgency phrase OR when body combines
+    // an urgency token with an action token ("verify now", "reset your password
+    // immediately", etc.). Modelled after how an AI prompt treats urgency as
+    // a semantic content feature rather than a link property.
+    const urgencySignal = this.detectUrgencyLanguage(subject, body);
+    if (urgencySignal) {
+      signals.push(urgencySignal);
+    }
+
     logger.debug({
       msg: 'Content analysis complete',
       signalsGenerated: signals.length,
     });
 
     return signals;
+  }
+
+  /**
+   * Detect medium-scope urgency language. Returns a single high-severity
+   * `urgency_language_detected` signal or null. Delegates keyword matching
+   * to the pure `urgency-detector` module so it can be unit tested without
+   * instantiating the full analyzer (which transitively imports `natural`).
+   */
+  private detectUrgencyLanguage(
+    subject: string,
+    body: string
+  ): AnalysisSignal | null {
+    const result = detectUrgencyLanguageImpl(subject, body);
+
+    if (!result.firesBySubject && !result.firesByBody) {
+      return null;
+    }
+
+    const triggers: string[] = [];
+    if (result.firesBySubject) triggers.push('subject urgency phrase');
+    if (result.firesByBody) triggers.push('body urgency + action combo');
+
+    return this.createSignal({
+      signalType: 'urgency_language_detected',
+      severity: 'high',
+      confidence: 0.8,
+      description: `Email uses high-pressure urgency and action language (${triggers.join(', ')})`,
+      evidence: {
+        subjectMatches: result.subjectMatches,
+        bodyUrgencyMatches: result.bodyUrgencyMatches,
+        bodyActionMatches: result.bodyActionMatches,
+      },
+    });
   }
 
   /**

@@ -28,6 +28,9 @@ export type SignalType =
   | 'new_domain'
   | 'https_missing'
   | 'certificate_invalid'
+  | 'typosquat_hostname'
+  | 'numeric_ip_hostname'
+  | 'suspicious_hostname_structure'
   // Sender Reputation Analyzer (Phase 1 - Systematic Validation)
   | 'invalid_email_format'
   | 'disposable_email'
@@ -48,16 +51,19 @@ export type SignalType =
   | 'url_flagged_suspicious'
   | 'url_in_malware_database'
   | 'url_in_phishing_database'
+  | 'link_sender_domain_mismatch'
   // Attachment Analyzer (Phase 3 - File Analysis)
   | 'attachment_dangerous_type'
   | 'attachment_suspicious_type'
   | 'attachment_type_mismatch'
+  | 'attachment_phishing_pattern'
   // Content Analysis Analyzer (Phase 4 - ML/NLP, NO keywords)
   | 'negative_sentiment_high'
   | 'emotional_pressure_detected'
   | 'language_anomaly_detected'
   | 'brand_impersonation_suspected'
   | 'poor_readability'
+  | 'urgency_language_detected'
   // Button/CTA Analyzer (Phase 5 - Button tracking and redirects)
   | 'button_hidden_redirect'
   | 'button_text_mismatch'
@@ -250,6 +256,9 @@ export interface AnalysisMetadata {
 
   /** Trust level from whitelist (if whitelisted) */
   trustLevel?: 'high' | 'medium' | 'low';
+
+  /** True when the input matched a whitelist entry (URL short-circuit) */
+  whitelisted?: boolean;
 
   /** Content risk assessment profile */
   contentRisk?: {

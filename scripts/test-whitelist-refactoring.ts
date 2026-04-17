@@ -14,7 +14,7 @@ import { ContentRiskAnalyzer } from '../src/core/analyzers/risk/content-risk.ana
 import { getAnalyzerRegistry } from '../src/core/engine/analyzer-registry.js';
 import type { NormalizedInput } from '../src/core/models/input.js';
 import { getLogger } from '../src/infrastructure/logging/index.js';
-import { closePool } from '../src/infrastructure/database/client.js';
+import { closeDatabase } from '../src/infrastructure/database/client.js';
 
 const logger = getLogger();
 
@@ -34,13 +34,16 @@ async function testWhitelistRefactoring() {
       scanRichContent: false, // Skip rich content scanning
     });
 
-    logger.info('✓ Whitelist entry added:', {
-      id: testEntry.id,
-      value: testEntry.value,
-      isTrusted: testEntry.isTrusted,
-      scanAttachments: testEntry.scanAttachments,
-      scanRichContent: testEntry.scanRichContent,
-    });
+    logger.info(
+      {
+        id: testEntry.id,
+        value: testEntry.value,
+        isTrusted: testEntry.isTrusted,
+        scanAttachments: testEntry.scanAttachments,
+        scanRichContent: testEntry.scanRichContent,
+      },
+      '✓ Whitelist entry added'
+    );
 
     // Verify the entry
     const retrievedEntry = await whitelistService.getEntry(testEntry.id);
@@ -76,16 +79,19 @@ async function testWhitelistRefactoring() {
     const contentRiskAnalyzer = new ContentRiskAnalyzer();
     const riskProfile = await contentRiskAnalyzer.analyzeRisk(testInput);
 
-    logger.info('✓ Content pre-scan completed:', {
-      hasLinks: riskProfile.hasLinks,
-      linkCount: riskProfile.linkCount,
-      hasAttachments: riskProfile.hasAttachments,
-      hasImages: riskProfile.hasImages,
-      hasQRCodes: riskProfile.hasQRCodes,
-      hasForms: riskProfile.hasForms,
-      hasUrgencyLanguage: riskProfile.hasUrgencyLanguage,
-      overallRiskScore: riskProfile.overallRiskScore,
-    });
+    logger.info(
+      {
+        hasLinks: riskProfile.hasLinks,
+        linkCount: riskProfile.linkCount,
+        hasAttachments: riskProfile.hasAttachments,
+        hasImages: riskProfile.hasImages,
+        hasQRCodes: riskProfile.hasQRCodes,
+        hasForms: riskProfile.hasForms,
+        hasUrgencyLanguage: riskProfile.hasUrgencyLanguage,
+        overallRiskScore: riskProfile.overallRiskScore,
+      },
+      '✓ Content pre-scan completed'
+    );
 
     logger.info('=== Test 3: Analyzer Filtering ===');
 
@@ -96,31 +102,39 @@ async function testWhitelistRefactoring() {
       throw new Error('Expected email to be whitelisted');
     }
 
-    logger.info('✓ Whitelist check passed:', {
-      isWhitelisted: whitelistResult.isWhitelisted,
-      matchReason: whitelistResult.matchReason,
-      entry: whitelistResult.entry
-        ? {
-            isTrusted: whitelistResult.entry.isTrusted,
-            scanAttachments: whitelistResult.entry.scanAttachments,
-            scanRichContent: whitelistResult.entry.scanRichContent,
-          }
-        : undefined,
-    });
+    logger.info(
+      {
+        isWhitelisted: whitelistResult.isWhitelisted,
+        matchReason: whitelistResult.matchReason,
+        entry: whitelistResult.entry
+          ? {
+              isTrusted: whitelistResult.entry.isTrusted,
+              scanAttachments: whitelistResult.entry.scanAttachments,
+              scanRichContent: whitelistResult.entry.scanRichContent,
+            }
+          : undefined,
+      },
+      '✓ Whitelist check passed'
+    );
 
     // Get filtered analyzers
     const analyzerRegistry = getAnalyzerRegistry();
     const filteredAnalyzers = analyzerRegistry.getFilteredAnalyzers(
       whitelistResult.entry,
-      riskProfile
+      riskProfile,
+      testInput,
+      'email_inbox'
     );
 
     const analyzerNames = filteredAnalyzers.map((a) => a.getName());
 
-    logger.info('✓ Analyzers filtered based on content and whitelist:', {
-      analyzersCount: filteredAnalyzers.length,
-      analyzers: analyzerNames,
-    });
+    logger.info(
+      {
+        analyzersCount: filteredAnalyzers.length,
+        analyzers: analyzerNames,
+      },
+      '✓ Analyzers filtered based on content and whitelist'
+    );
 
     // Verify expected filtering behavior
     // Trusted sender, scanRichContent=false → should skip link analyzers
@@ -171,15 +185,20 @@ async function testWhitelistRefactoring() {
 
     const nonTrustedFilteredAnalyzers = analyzerRegistry.getFilteredAnalyzers(
       nonTrustedWhitelistResult.entry,
-      nonTrustedRiskProfile
+      nonTrustedRiskProfile,
+      nonTrustedInput,
+      'email_inbox'
     );
 
     const nonTrustedAnalyzerNames = nonTrustedFilteredAnalyzers.map((a) => a.getName());
 
-    logger.info('✓ Non-trusted email analyzers:', {
-      analyzersCount: nonTrustedFilteredAnalyzers.length,
-      analyzers: nonTrustedAnalyzerNames,
-    });
+    logger.info(
+      {
+        analyzersCount: nonTrustedFilteredAnalyzers.length,
+        analyzers: nonTrustedAnalyzerNames,
+      },
+      '✓ Non-trusted email analyzers'
+    );
 
     const nonTrustedHasAuth = nonTrustedAnalyzerNames.some((name) =>
       ['SpfAnalyzer', 'DkimAnalyzer', 'SenderReputationAnalyzer'].includes(name)
@@ -209,7 +228,7 @@ async function testWhitelistRefactoring() {
     logger.error('Test failed:', error);
     throw error;
   } finally {
-    await closePool();
+    await closeDatabase();
   }
 }
 

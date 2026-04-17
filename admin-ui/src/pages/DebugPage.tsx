@@ -5,10 +5,11 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { formatRelativeTime } from '@/lib/utils';
-import type { Analysis, EnrichedThreat } from '@/types';
+import type { Analysis, AnalysisSignal, EnrichedThreat } from '@/types';
 import { Bug, CheckCircle, AlertTriangle, XCircle, Search } from 'lucide-react';
 import { ExecutionStepsTimeline } from '@/components/ExecutionStepsTimeline';
 import { ThreatDisplay } from '@/components/ThreatDisplay';
+import { AIDebugSection } from '@/components/AIDebugSection';
 
 export default function DebugPage() {
   const [searchParams] = useSearchParams();
@@ -337,16 +338,22 @@ export default function DebugPage() {
                           Full bypass (trusted sender, no risk indicators)
                         </p>
                       ) : (
-                        <div className="flex flex-wrap gap-1 mt-1">
-                          {analysis.analyzersRun.map((analyzer, idx) => (
-                            <span
-                              key={idx}
-                              className="px-2 py-0.5 text-xs rounded bg-blue-100 dark:bg-blue-800/50 text-blue-800 dark:text-blue-200"
-                            >
-                              {analyzer}
-                            </span>
-                          ))}
-                        </div>
+                        <>
+                          <div className="flex flex-wrap gap-1 mt-1">
+                            {analysis.analyzersRun.map((analyzer, idx) => (
+                              <span
+                                key={idx}
+                                className="px-2 py-0.5 text-xs rounded bg-blue-100 dark:bg-blue-800/50 text-blue-800 dark:text-blue-200"
+                              >
+                                {analyzer}
+                              </span>
+                            ))}
+                          </div>
+                          <AnalyzerSignalsBreakdown
+                            analyzersRun={analysis.analyzersRun}
+                            signals={analysis.signals}
+                          />
+                        </>
                       )}
                     </div>
                   )}
@@ -503,6 +510,7 @@ export default function DebugPage() {
                       <ExecutionStepsTimeline steps={analysis.executionSteps} />
                     </div>
                   )}
+                  <AIDebugSection aiMetadata={analysis.aiMetadata} />
                   {/* JavaScript Threat Detection */}
                   {(() => {
                     const threatData = extractEnrichedThreats(analysis);
@@ -583,6 +591,106 @@ export default function DebugPage() {
           </CardContent>
         </Card>
       )}
+    </div>
+  );
+}
+
+function severityPillClasses(severity: AnalysisSignal['severity']): string {
+  switch (severity) {
+    case 'critical':
+      return 'bg-red-100 text-red-800 dark:bg-red-900/60 dark:text-red-200';
+    case 'high':
+      return 'bg-orange-100 text-orange-800 dark:bg-orange-900/60 dark:text-orange-200';
+    case 'medium':
+      return 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/60 dark:text-yellow-200';
+    case 'low':
+    default:
+      return 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300';
+  }
+}
+
+function AnalyzerSignalsBreakdown({
+  analyzersRun,
+  signals,
+}: {
+  analyzersRun: string[];
+  signals?: AnalysisSignal[];
+}) {
+  if (!signals || signals.length === 0) {
+    return (
+      <p className="mt-2 text-xs text-blue-700 dark:text-blue-400 italic">
+        No per-signal details available for this analysis.
+      </p>
+    );
+  }
+
+  const grouped = new Map<string, AnalysisSignal[]>();
+  for (const s of signals) {
+    const key = s.analyzerName || 'Unknown';
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key)!.push(s);
+  }
+
+  // Render rows for every analyzer that ran, even if it produced no signals,
+  // so analysts can tell a silent analyzer apart from an unregistered one.
+  const analyzerOrder = Array.from(
+    new Set<string>([...analyzersRun, ...grouped.keys()])
+  );
+
+  return (
+    <div className="mt-3 space-y-2">
+      {analyzerOrder.map((analyzerName) => {
+        const rows = grouped.get(analyzerName) || [];
+        return (
+          <div
+            key={analyzerName}
+            className="rounded border border-blue-200 dark:border-blue-800 bg-white/60 dark:bg-blue-950/30 p-2"
+          >
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-blue-900 dark:text-blue-200">
+                {analyzerName}
+              </span>
+              <span className="text-[10px] text-blue-700 dark:text-blue-300">
+                {rows.length === 0
+                  ? 'no findings'
+                  : `${rows.length} signal${rows.length === 1 ? '' : 's'}`}
+              </span>
+            </div>
+            {rows.length > 0 && (
+              <ul className="mt-1 space-y-1">
+                {rows.map((sig, idx) => (
+                  <li
+                    key={`${analyzerName}-${idx}`}
+                    className="flex flex-wrap items-start gap-2 text-[11px] leading-snug"
+                  >
+                    <span
+                      className={`inline-block px-1.5 py-0.5 rounded font-medium uppercase tracking-wide ${severityPillClasses(
+                        sig.severity
+                      )}`}
+                    >
+                      {sig.severity}
+                    </span>
+                    <code className="px-1 py-0.5 rounded bg-blue-50 dark:bg-blue-900/40 text-blue-800 dark:text-blue-200 text-[10px]">
+                      {sig.signalType}
+                    </code>
+                    <span
+                      className="text-gray-700 dark:text-gray-200 break-words flex-1 min-w-[12rem]"
+                      title={sig.description}
+                    >
+                      {sig.description || '(no description)'}
+                    </span>
+                    {typeof sig.confidence === 'number' && (
+                      <span className="text-[10px] text-gray-500 dark:text-gray-400">
+                        {Math.round(sig.confidence * 100)}%
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

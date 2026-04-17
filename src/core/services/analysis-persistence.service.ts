@@ -67,6 +67,13 @@ export interface TimingData {
 
 /**
  * AI metadata structure
+ *
+ * Core fields (provider, model, tokens, temperature, latencyMs, costUsd)
+ * are required. Debug fields (apiUrl, apiRequest, apiResponse, rawContent,
+ * parseError, fallbackReparseUsed) are populated by providers and surfaced
+ * in the debug view so QA can inspect the exact round-trip. Debug fields
+ * are size-capped before persistence; API keys live in headers or URL
+ * query params and are never captured here (see sanitizeApiUrl).
  */
 export interface AIMetadata {
   provider: string;
@@ -79,6 +86,23 @@ export interface AIMetadata {
   temperature: number;
   latencyMs: number;
   costUsd: number;
+  apiUrl?: string;
+  apiRequest?: unknown;
+  apiResponse?: unknown;
+  rawContent?: string;
+  parseError?: { message: string; position?: number } | null;
+  fallbackReparseUsed?: boolean;
+  /**
+   * Records whether the configured prompt template was honored or we fell
+   * back to the legacy hardcoded prompt (and why). Surfaced in Admin Debug UI.
+   */
+  promptSource?:
+    | { type: 'template'; id: string; name: string }
+    | {
+        type: 'legacy';
+        reason: 'no_template_id' | 'template_not_found' | 'load_error';
+        templateId?: string;
+      };
 }
 
 /**
@@ -323,7 +347,8 @@ export class AnalysisPersistenceService {
         networkLatencyMs: timingData.networkLatency || undefined,
       };
 
-      // Build ai_metadata JSONB
+      // Build ai_metadata JSONB (includes debug fields for UI inspection;
+      // debug fields are already size-capped upstream by AIExecutionService)
       const aiMetadataJson = aiMetadata
         ? {
             provider: aiMetadata.provider,
@@ -336,6 +361,13 @@ export class AnalysisPersistenceService {
             temperature: aiMetadata.temperature,
             latencyMs: aiMetadata.latencyMs,
             costUsd: aiMetadata.costUsd,
+            apiUrl: aiMetadata.apiUrl,
+            apiRequest: aiMetadata.apiRequest,
+            apiResponse: aiMetadata.apiResponse,
+            rawContent: aiMetadata.rawContent,
+            parseError: aiMetadata.parseError ?? null,
+            fallbackReparseUsed: aiMetadata.fallbackReparseUsed ?? false,
+            promptSource: aiMetadata.promptSource,
           }
         : undefined;
 

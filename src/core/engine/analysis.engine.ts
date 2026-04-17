@@ -11,7 +11,7 @@
 
 import { randomUUID } from 'node:crypto';
 import type { NormalizedInput } from '../models/input.js';
-import { isEmailInput } from '../models/input.js';
+import { isEmailInput, isUrlInput } from '../models/input.js';
 import type { AnalysisResult, ExecutionStep } from '../models/analysis-result.js';
 import { getWhitelistService } from '../services/whitelist.service.js';
 import { getLogger, setStepContext, clearStepContext } from '../../infrastructure/logging/index.js';
@@ -33,7 +33,10 @@ import { NativeExecutionStrategy } from '../execution/strategies/native.strategy
 import { HybridExecutionStrategy } from '../execution/strategies/hybrid.strategy.js';
 import { AIExecutionStrategy } from '../execution/strategies/ai.strategy.js';
 import { getAnalyzerRegistry } from './analyzer-registry.js';
-import { getVerdictService } from '../services/verdict.service.js';
+import { createVerdictService } from '../services/verdict.factory.js';
+import { resolvePipeline } from './task-analysis-profile.js';
+import { buildMinimalUrlRiskProfile } from './minimal-url-risk-profile.js';
+import type { ContentRiskProfile } from '../analyzers/risk/content-risk.types.js';
 
 const logger = getLogger();
 
@@ -81,10 +84,11 @@ export class AnalysisEngine {
       networkLatency,
     });
 
-    // 2. Determine integration and load configuration
-    const integrationName = this.getIntegrationName(input);
-    const integrationConfig = await this.loadIntegrationConfig(integrationName);
-    const executionMode = integrationConfig?.executionMode || 'native';
+    // 2. Determine integration config (single source of truth) and resolve pipeline
+    const requestedIntegrationName = this.getIntegrationName(input);
+    const integrationConfig = await this.loadIntegrationConfig(requestedIntegrationName);
+    const pipeline = resolvePipeline(input, integrationConfig);
+    const { integrationName, contentPrescan, analyzerFilteringMode, executionMode } = pipeline;
 
     // 3. Initialize persistence tracking (BEFORE any exceptions can occur)
     const persistenceService = getAnalysisPersistenceService();
@@ -151,7 +155,41 @@ export class AnalysisEngine {
         isTrusted: whitelistResult.entry?.isTrusted,
       });
 
-      // Step 2: Content risk analysis (pre-scan) - START
+      // URL whitelist short-circuit: skip the rest of the pipeline entirely.
+      // Email flow is intentionally untouched - it keeps the existing whitelist context
+      // passed to analyzers further down.
+      if (whitelistResult.isWhitelisted && isUrlInput(input)) {
+        const backendEndTime = Date.now();
+        const actualDuration = backendEndTime - backendStartTime;
+
+        result = this.buildWhitelistedUrlResult(
+          input,
+          whitelistResult,
+          analysisId,
+          executionSteps,
+          actualDuration
+        );
+
+        stepManager.completeStep(rootStepId, {
+          verdict: result.verdict,
+          score: result.score,
+          signalCount: 0,
+          shortCircuit: 'whitelist',
+        });
+
+        persistenceService.updateResult(analysisId, this.mapToPersistenceResult(result));
+
+        logger.info({
+          analysisId,
+          msg: 'URL whitelist short-circuit: returning Safe without running analyzers',
+          matchReason: whitelistResult.matchReason,
+          duration: actualDuration,
+        });
+
+        return result;
+      }
+
+      // Step 2: Content risk analysis (pre-scan) — task-specific (email MIME vs URL static / optional HTML context)
       const contentRiskStepId = stepManager.startStep({
         name: 'content_risk_pre_scan',
         source: {
@@ -161,43 +199,86 @@ export class AnalysisEngine {
       });
       setStepContext(contentRiskStepId, (entry) => stepManager.captureLog(entry));
 
-      logger.info({
-        msg: 'Starting content risk pre-scan',
-        analysisId,
-      });
+      let riskProfile: ContentRiskProfile;
 
-      const contentRiskAnalyzer = new ContentRiskAnalyzer();
-      const riskProfile = await contentRiskAnalyzer.analyzeRisk(input);
+      if (contentPrescan === 'none') {
+        logger.info({
+          msg: 'Skipping content pre-scan (integration policy: none)',
+          analysisId,
+          integrationName,
+        });
 
-      logger.info({
-        msg: 'Content risk pre-scan completed',
-        analysisId,
-        riskScore: riskProfile.overallRiskScore,
-        hasLinks: riskProfile.hasLinks,
-        hasAttachments: riskProfile.hasAttachments,
-      });
+        if (isUrlInput(input)) {
+          riskProfile = buildMinimalUrlRiskProfile(input);
+        } else {
+          const contentRiskAnalyzer = new ContentRiskAnalyzer();
+          riskProfile = await contentRiskAnalyzer.analyzeRisk(input, { contentPrescan: 'email' });
+        }
 
-      // Content risk - END
-      stepManager.completeStep(contentRiskStepId, {
-        riskScore: riskProfile.overallRiskScore,
-        hasLinks: riskProfile.hasLinks,
-        hasAttachments: riskProfile.hasAttachments,
-        hasImages: riskProfile.hasImages,
-        hasQRCodes: riskProfile.hasQRCodes,
-        hasForms: riskProfile.hasForms,
-        hasUrgency: riskProfile.hasUrgencyLanguage,
-        extractionTimings: riskProfile.extractionTimings,
-        totalExtractionTimeMs: Object.values(riskProfile.extractionTimings || {}).reduce(
-          (a, b) => a + b,
-          0
-        ),
-        extractedDomains: riskProfile.domains?.allDomains.length || 0,
-        extractedLinks: riskProfile.linkMetadata?.length || 0,
-        extractedImages: riskProfile.images?.length || 0,
-        extractedQRCodes: riskProfile.qrCodes?.length || 0,
-        extractedAttachments: riskProfile.attachmentMetadata?.length || 0,
-        extractedButtons: riskProfile.buttons?.length || 0,
-      });
+        stepManager.completeStep(contentRiskStepId, {
+          prescanMode: 'none',
+          riskScore: riskProfile.overallRiskScore,
+          hasLinks: riskProfile.hasLinks,
+          hasAttachments: riskProfile.hasAttachments,
+          hasImages: riskProfile.hasImages,
+          hasQRCodes: riskProfile.hasQRCodes,
+          hasForms: riskProfile.hasForms,
+          hasUrgency: riskProfile.hasUrgencyLanguage,
+          extractionTimings: riskProfile.extractionTimings,
+          totalExtractionTimeMs: 0,
+          extractedDomains: riskProfile.domains?.allDomains.length || 0,
+          extractedLinks: riskProfile.linkMetadata?.length || 0,
+          extractedImages: 0,
+          extractedQRCodes: 0,
+          extractedAttachments: 0,
+          extractedButtons: 0,
+        });
+      } else {
+        logger.info({
+          msg: 'Starting content risk pre-scan',
+          analysisId,
+          integrationName,
+          contentPrescan,
+        });
+
+        const contentRiskAnalyzer = new ContentRiskAnalyzer();
+        riskProfile = await contentRiskAnalyzer.analyzeRisk(input, {
+          contentPrescan,
+        });
+
+        logger.info({
+          msg: 'Content risk pre-scan completed',
+          analysisId,
+          riskScore: riskProfile.overallRiskScore,
+          hasLinks: riskProfile.hasLinks,
+          hasAttachments: riskProfile.hasAttachments,
+          contentPrescan,
+        });
+
+        stepManager.completeStep(contentRiskStepId, {
+          prescanMode: contentPrescan,
+          riskScore: riskProfile.overallRiskScore,
+          hasLinks: riskProfile.hasLinks,
+          hasAttachments: riskProfile.hasAttachments,
+          hasImages: riskProfile.hasImages,
+          hasQRCodes: riskProfile.hasQRCodes,
+          hasForms: riskProfile.hasForms,
+          hasUrgency: riskProfile.hasUrgencyLanguage,
+          extractionTimings: riskProfile.extractionTimings,
+          totalExtractionTimeMs: Object.values(riskProfile.extractionTimings || {}).reduce(
+            (a, b) => a + b,
+            0
+          ),
+          extractedDomains: riskProfile.domains?.allDomains.length || 0,
+          extractedLinks: riskProfile.linkMetadata?.length || 0,
+          extractedImages: riskProfile.images?.length || 0,
+          extractedQRCodes: riskProfile.qrCodes?.length || 0,
+          extractedAttachments: riskProfile.attachmentMetadata?.length || 0,
+          extractedButtons: riskProfile.buttons?.length || 0,
+        });
+      }
+
+      input.riskProfile = riskProfile;
 
       // Step 3: Analyzer filtering (ENGINE LEVEL) - START
       const filteringStepId = stepManager.startStep({
@@ -210,14 +291,18 @@ export class AnalysisEngine {
       setStepContext(filteringStepId, (entry) => stepManager.captureLog(entry));
 
       logger.info({
-        msg: 'Filtering analyzers based on content profile',
+        msg: 'Filtering analyzers based on content profile and integration policy',
         analysisId,
+        integrationName,
+        analyzerFilteringMode,
       });
 
       const analyzerRegistry = getAnalyzerRegistry();
       const filteringResult = analyzerRegistry.getFilteredAnalyzersWithReasons(
+        input,
         whitelistResult.isWhitelisted ? whitelistResult.entry : undefined,
-        riskProfile
+        riskProfile,
+        analyzerFilteringMode
       );
 
       logger.info({
@@ -261,7 +346,7 @@ export class AnalysisEngine {
         stepManager,
         config: integrationConfig
           ? {
-              executionMode: integrationConfig.executionMode,
+              executionMode,
               aiModelId: integrationConfig.aiModelId,
               aiProvider: integrationConfig.aiProvider,
               aiModel: integrationConfig.aiModel,
@@ -333,7 +418,10 @@ export class AnalysisEngine {
       });
 
       const analyzerWeights = analyzerRegistry.getAnalyzerWeights();
-      const verdictService = getVerdictService();
+      // Route through the factory so URL inputs receive UrlVerdictService
+      // while email/none continue to use the base VerdictService exactly as
+      // before. `getVerdictService` remains in place for legacy callers.
+      const verdictService = createVerdictService(contentPrescan, input);
       const verdict = verdictService.calculateVerdict(executionResult.result.signals, analyzerWeights);
 
       logger.info({
@@ -499,9 +587,9 @@ export class AnalysisEngine {
    * Determine integration name from input type
    */
   private getIntegrationName(input: NormalizedInput): string {
-    // Map input type to integration source
-    // In future, this could come from input.metadata.source
-    return input.type === 'email' ? 'gmail' : 'chrome';
+    // Clients may pass integrationName explicitly (e.g. `chrome_task2`, `gmail_strict`).
+    // When unset we fall back to a default derived from the input type.
+    return input.integrationName ?? (input.type === 'email' ? 'gmail' : 'chrome');
   }
 
   /**
@@ -546,6 +634,51 @@ export class AnalysisEngine {
       analyzersRun: result.metadata.analyzersRun,
       executionSteps: result.metadata.executionSteps || [],
       durationMs: result.metadata.duration,
+    };
+  }
+
+  /**
+   * Build a Safe result for whitelisted URL inputs.
+   *
+   * Used by the URL-only whitelist short-circuit: bypasses all analyzers and the
+   * verdict service so the response clearly says "whitelisted" without spending
+   * any budget on extraction or AI calls.
+   */
+  private buildWhitelistedUrlResult(
+    _input: NormalizedInput,
+    whitelistResult: { matchReason?: string; entry?: { isTrusted?: boolean } },
+    analysisId: string,
+    executionSteps: ExecutionStep[],
+    durationMs: number
+  ): AnalysisResult {
+    const matchReason = whitelistResult.matchReason || 'URL is whitelisted';
+    const trustLevel = whitelistResult.entry?.isTrusted ? 'high' : undefined;
+
+    return {
+      verdict: 'Safe',
+      confidence: 1,
+      score: 0,
+      alertLevel: 'none',
+      redFlags: [
+        {
+          category: 'suspicious_behavior',
+          message: 'URL is on the trusted whitelist (analysis bypassed)',
+          severity: 'low',
+        },
+      ],
+      reasoning: `Whitelisted: ${matchReason}`,
+      actions: ['No action required - URL is on the trusted whitelist.'],
+      signals: [],
+      metadata: {
+        duration: durationMs,
+        timestamp: new Date(),
+        analyzersRun: [],
+        analysisId,
+        executionSteps,
+        whitelisted: true,
+        trustLevel,
+        bypassType: 'full',
+      },
     };
   }
 

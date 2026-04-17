@@ -7,13 +7,18 @@
 
 import type { IAnalyzer } from '../analyzers/base/index.js';
 import type { WhitelistEntry } from '../models/whitelist.js';
-import type { ContentRiskProfile } from '../analyzers/risk/content-risk.analyzer.js';
+import type { ContentRiskProfile } from '../analyzers/risk/content-risk.types.js';
+import type { ContentPrescanMode } from '../models/content-prescan.js';
+import type { NormalizedInput } from '../models/input.js';
 import { getLogger } from '../../infrastructure/logging/index.js';
 
 const logger = getLogger();
 
+/** How analyzers are chosen after whitelist (email content rules vs Inspect URL allowlist). */
+export type AnalyzerFilteringMode = 'email_inbox' | 'inspect_url';
+
 /**
- * Analyzer filtering result with detailed reasons
+ * Analyzer filtering result with detailed reasoning
  */
 export interface AnalyzerFilteringResult {
   analyzers: IAnalyzer[];
@@ -26,6 +31,34 @@ export interface AnalyzerFilteringResult {
     analyzerName: string;
     reason: string; // Why it was skipped
   }>;
+}
+
+const INSPECT_URL_ANALYZER_NAMES = new Set([
+  'urlentropyanalyzer',
+  'linkreputationanalyzer',
+  'redirectanalyzer',
+  'formanalyzer',
+]);
+
+/**
+ * Return true if the analyzer variant explicitly supports the given prescan
+ * mode. Analyzers without a `getSupportedPrescanModes()` method are treated
+ * as universally supported (the historical default).
+ */
+function analyzerSupports(analyzer: IAnalyzer, mode: ContentPrescanMode): boolean {
+  if (typeof analyzer.getSupportedPrescanModes !== 'function') return true;
+  const modes = analyzer.getSupportedPrescanModes();
+  return modes.includes(mode);
+}
+
+/**
+ * Return true if this analyzer instance is a url-only specialization (a
+ * subclass that declares ONLY 'url' in its supported prescan modes).
+ */
+function isUrlOnlyVariant(analyzer: IAnalyzer): boolean {
+  if (typeof analyzer.getSupportedPrescanModes !== 'function') return false;
+  const modes = analyzer.getSupportedPrescanModes();
+  return modes.length === 1 && modes[0] === 'url';
 }
 
 /**
@@ -115,37 +148,131 @@ class AnalyzerRegistry {
   }
 
   /**
-   * Get filtered analyzers based on whitelist entry AND content profile
-   * This is the core of content-based analyzer filtering
-   *
-   * @param whitelistEntry - Whitelist entry (if whitelisted)
-   * @param contentProfile - Content risk profile (ALWAYS required)
-   * @returns Array of analyzers to run
+   * Get filtered analyzers based on whitelist entry AND content profile (email inbox rules).
+   * @deprecated Prefer {@link getFilteredAnalyzersWithReasons} with explicit {@link AnalyzerFilteringMode}.
    */
   getFilteredAnalyzers(
     whitelistEntry: WhitelistEntry | undefined,
-    contentProfile: ContentRiskProfile
+    contentProfile: ContentRiskProfile,
+    input: NormalizedInput,
+    filteringMode: AnalyzerFilteringMode
   ): IAnalyzer[] {
-    const allAnalyzers = this.getAnalyzers();
-
-    // Non-trusted or no whitelist → content-based filtering
-    if (!whitelistEntry || !whitelistEntry.isTrusted) {
-      return this.filterByContent(allAnalyzers, contentProfile, false);
-    }
-
-    // Trusted → conditional filtering based on checkboxes
-    return this.filterByContent(allAnalyzers, contentProfile, true, whitelistEntry);
+    return this.getFilteredAnalyzersWithReasons(
+      input,
+      whitelistEntry,
+      contentProfile,
+      filteringMode
+    ).analyzers;
   }
 
   /**
    * Get filtered analyzers WITH detailed reasoning
-   * Shows why each analyzer was included or skipped
-   *
-   * @param whitelistEntry - Whitelist entry (if whitelisted)
-   * @param contentProfile - Content risk profile (ALWAYS required)
-   * @returns Filtering result with analyzers and detailed reasons
    */
   getFilteredAnalyzersWithReasons(
+    input: NormalizedInput,
+    whitelistEntry: WhitelistEntry | undefined,
+    contentProfile: ContentRiskProfile,
+    filteringMode: AnalyzerFilteringMode
+  ): AnalyzerFilteringResult {
+    if (filteringMode === 'inspect_url') {
+      return this.selectInspectUrlAnalyzers(input, whitelistEntry);
+    }
+    return this.getEmailInboxFilteredAnalyzersWithReasons(input, whitelistEntry, contentProfile);
+  }
+
+  /**
+   * Inspect URL: fixed analyzer set + isApplicable + trusted rich-content rules.
+   *
+   * When multiple registered analyzers share a name (case-insensitive), we
+   * prefer the one that explicitly declares 'url' in
+   * `getSupportedPrescanModes()`. This allows `UrlEntropyUrlAnalyzer` /
+   * `LinkReputationUrlAnalyzer` / `RedirectUrlAnalyzer` / `FormUrlAnalyzer`
+   * subclasses to ship URL-specific logic while their email-facing base
+   * classes remain the default for the email inbox path.
+   */
+  private selectInspectUrlAnalyzers(
+    input: NormalizedInput,
+    whitelistEntry: WhitelistEntry | undefined
+  ): AnalyzerFilteringResult {
+    const selected: IAnalyzer[] = [];
+    const reasons: Array<{ analyzerName: string; reason: string; triggeredBy: string }> = [];
+    const skipped: Array<{ analyzerName: string; reason: string }> = [];
+
+    const isTrusted = whitelistEntry?.isTrusted || false;
+    const scanRichOk = !isTrusted || whitelistEntry?.scanRichContent !== false;
+
+    // Group analyzers by normalized name so we can prefer url-variant over base.
+    const byName = new Map<string, IAnalyzer[]>();
+    for (const analyzer of this.getAnalyzers()) {
+      const normalizedName = analyzer.getName().toLowerCase();
+      if (!INSPECT_URL_ANALYZER_NAMES.has(normalizedName)) continue;
+      const bucket = byName.get(normalizedName);
+      if (bucket) {
+        bucket.push(analyzer);
+      } else {
+        byName.set(normalizedName, [analyzer]);
+      }
+    }
+
+    for (const [normalizedName, candidates] of byName) {
+      const urlPreferred =
+        candidates.find((a) => analyzerSupports(a, 'url') &&
+          typeof a.getSupportedPrescanModes === 'function') ??
+        candidates.find((a) => analyzerSupports(a, 'url')) ??
+        candidates[0];
+
+      if (!urlPreferred) continue;
+      const name = urlPreferred.getName();
+
+      if (!urlPreferred.isApplicable(input)) {
+        skipped.push({
+          analyzerName: name,
+          reason: 'Analyzer not applicable to this input',
+        });
+        continue;
+      }
+
+      if (!scanRichOk) {
+        skipped.push({
+          analyzerName: name,
+          reason: 'Trusted allowlist entry with scanRichContent disabled',
+        });
+        continue;
+      }
+
+      selected.push(urlPreferred);
+      reasons.push({
+        analyzerName: name,
+        reason: `Inspect URL task analyzer (${normalizedName}, ${candidates.length} variant(s), url-preferred)`,
+        triggeredBy: 'task:inspect_url',
+      });
+    }
+
+    // Note skipped analyzers that weren't in the INSPECT_URL allowlist at all.
+    for (const analyzer of this.getAnalyzers()) {
+      const normalizedName = analyzer.getName().toLowerCase();
+      if (INSPECT_URL_ANALYZER_NAMES.has(normalizedName)) continue;
+      skipped.push({
+        analyzerName: analyzer.getName(),
+        reason: 'Not used for Inspect URL task',
+      });
+    }
+
+    logger.info({
+      msg: 'Inspect URL analyzer filtering completed',
+      selected: selected.length,
+      skipped: skipped.length,
+      selectedAnalyzers: reasons.map((r) => r.analyzerName),
+    });
+
+    return { analyzers: selected, reasons, skipped };
+  }
+
+  /**
+   * Email inbox: content + whitelist rules, gated by {@link IAnalyzer.isApplicable}.
+   */
+  private getEmailInboxFilteredAnalyzersWithReasons(
+    input: NormalizedInput,
     whitelistEntry: WhitelistEntry | undefined,
     contentProfile: ContentRiskProfile
   ): AnalyzerFilteringResult {
@@ -159,6 +286,23 @@ class AnalyzerRegistry {
     for (const analyzer of allAnalyzers) {
       const name = analyzer.getName();
       const normalizedName = name.toLowerCase();
+
+      // URL-only variants never participate in the email inbox path.
+      if (isUrlOnlyVariant(analyzer)) {
+        skipped.push({
+          analyzerName: name,
+          reason: 'URL-only analyzer variant; not used for email inbox path',
+        });
+        continue;
+      }
+
+      if (!analyzer.isApplicable(input)) {
+        skipped.push({
+          analyzerName: name,
+          reason: 'Analyzer not applicable to this input',
+        });
+        continue;
+      }
 
       // Authentication analyzers - only for non-trusted
       if (['spfanalyzer', 'dkimanalyzer', 'senderreputationanalyzer'].includes(normalizedName)) {
@@ -204,7 +348,11 @@ class AnalyzerRegistry {
       }
 
       // Link analyzers - content-based
-      if (normalizedName === 'linkreputationanalyzer' || normalizedName === 'urlentropyanalyzer' || normalizedName === 'redirectanalyzer') {
+      if (
+        normalizedName === 'linkreputationanalyzer' ||
+        normalizedName === 'urlentropyanalyzer' ||
+        normalizedName === 'redirectanalyzer'
+      ) {
         if (contentProfile.hasLinks) {
           if (!isTrusted || whitelistEntry?.scanRichContent) {
             selected.push(analyzer);
@@ -288,8 +436,10 @@ class AnalyzerRegistry {
             selected.push(analyzer);
             reasons.push({
               analyzerName: name,
-              reason: normalizedName === 'formanalyzer' ? 'Forms detected in HTML' : 'Buttons/CTAs detected',
-              triggeredBy: normalizedName === 'formanalyzer' ? 'hasForms: true' : `linkCount: ${contentProfile.linkCount}`,
+              reason:
+                normalizedName === 'formanalyzer' ? 'Forms detected in HTML' : 'Buttons/CTAs detected',
+              triggeredBy:
+                normalizedName === 'formanalyzer' ? 'hasForms: true' : `linkCount: ${contentProfile.linkCount}`,
             });
           } else {
             skipped.push({
@@ -300,7 +450,8 @@ class AnalyzerRegistry {
         } else {
           skipped.push({
             analyzerName: name,
-            reason: normalizedName === 'formanalyzer' ? 'No forms detected in HTML' : 'No buttons/CTAs detected',
+            reason:
+              normalizedName === 'formanalyzer' ? 'No forms detected in HTML' : 'No buttons/CTAs detected',
           });
         }
         continue;
@@ -323,6 +474,14 @@ class AnalyzerRegistry {
         }
         continue;
       }
+
+      // Unknown analyzer: include (same as legacy filterByContent default)
+      selected.push(analyzer);
+      reasons.push({
+        analyzerName: name,
+        reason: 'Included by default (no explicit email filter rule)',
+        triggeredBy: 'registry_default',
+      });
     }
 
     logger.info({
@@ -335,102 +494,6 @@ class AnalyzerRegistry {
     });
 
     return { analyzers: selected, reasons, skipped };
-  }
-
-  /**
-   * Filter analyzers by content presence
-   *
-   * @param analyzers - All available analyzers
-   * @param contentProfile - Content risk profile
-   * @param isTrusted - Whether sender is trusted
-   * @param whitelistEntry - Whitelist entry (optional, for trusted senders)
-   * @returns Filtered analyzers
-   */
-  private filterByContent(
-    analyzers: IAnalyzer[],
-    contentProfile: ContentRiskProfile,
-    isTrusted: boolean,
-    whitelistEntry?: WhitelistEntry
-  ): IAnalyzer[] {
-    const filtered: IAnalyzer[] = [];
-
-    for (const analyzer of analyzers) {
-      const name = analyzer.getName();
-      const normalizedName = name.toLowerCase();
-
-      // Authentication analyzers - only for non-trusted
-      if (['spfanalyzer', 'dkimanalyzer', 'senderreputationanalyzer'].includes(normalizedName)) {
-        if (!isTrusted) {
-          filtered.push(analyzer);
-        }
-        continue;
-      }
-
-      // Attachment analyzer - content-based
-      if (normalizedName === 'attachmentanalyzer') {
-        if (contentProfile.hasAttachments) {
-          if (!isTrusted || whitelistEntry?.scanAttachments) {
-            filtered.push(analyzer);
-          }
-        }
-        continue;
-      }
-
-      // Link/Image/QR/Form analyzers - content-based + rich content checkbox
-      if ([
-        'linkreputationanalyzer',
-        'urlentropyanalyzer',
-        'imageanalyzer',
-        'qrcodeanalyzer',
-        'formanalyzer',
-        'redirectanalyzer',
-        'buttonanalyzer',
-      ].includes(normalizedName)) {
-        const hasRelevantContent =
-          ((normalizedName.includes('link') ||
-            normalizedName.includes('url') ||
-            normalizedName === 'formanalyzer' ||
-            normalizedName === 'redirectanalyzer' ||
-            normalizedName === 'buttonanalyzer') &&
-            contentProfile.hasLinks) ||
-          (normalizedName === 'imageanalyzer' && contentProfile.hasImages) ||
-          (normalizedName === 'qrcodeanalyzer' && contentProfile.hasQRCodes);
-
-        if (hasRelevantContent) {
-          if (!isTrusted || whitelistEntry?.scanRichContent) {
-            filtered.push(analyzer);
-          }
-        }
-        continue;
-      }
-
-      // Content analysis - run if urgency detected (always, even for trusted)
-      if (normalizedName === 'contentanalysisanalyzer' || normalizedName === 'emotionalmanipulationanalyzer') {
-        if (contentProfile.hasUrgencyLanguage) {
-          filtered.push(analyzer);
-        }
-        continue;
-      }
-
-      // Default: include analyzer (for any new analyzers not explicitly handled)
-      filtered.push(analyzer);
-    }
-
-    logger.debug({
-      msg: 'Analyzers filtered by content',
-      isTrusted,
-      contentProfile: {
-        hasLinks: contentProfile.hasLinks,
-        hasAttachments: contentProfile.hasAttachments,
-        hasImages: contentProfile.hasImages,
-        hasQRCodes: contentProfile.hasQRCodes,
-        hasUrgency: contentProfile.hasUrgencyLanguage,
-      },
-      analyzersCount: filtered.length,
-      analyzers: filtered.map((a) => a.getName()),
-    });
-
-    return filtered;
   }
 }
 

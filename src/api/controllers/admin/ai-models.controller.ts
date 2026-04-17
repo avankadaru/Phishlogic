@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { getLogger } from '../../../infrastructure/logging/logger.js';
 import { getAIModelRepository } from '../../../infrastructure/database/repositories/ai-model.repository.js';
 import { getAIModelService } from '../../../core/services/ai-model.service.js';
+import { getIntegrationConfigService } from '../../../core/services/integration-config.service.js';
 import { sanitizeApiKey } from '../../../infrastructure/encryption/api-key-encryption.js';
 
 const logger = getLogger();
@@ -137,6 +138,9 @@ export const createAIModel = async (request: FastifyRequest, reply: FastifyReply
 
     logger.info({ modelId: result.data?.id, name: result.data?.name }, 'AI model created successfully');
 
+    // Invalidate IntegrationConfig cache so subsequent runs pick up the new model.
+    getIntegrationConfigService().clearCache();
+
     reply.status(201).send({
       success: true,
       data: result.data,
@@ -190,6 +194,10 @@ export const updateAIModel = async (request: FastifyRequest, reply: FastifyReply
 
     logger.info({ modelId: id, updates: Object.keys(data) }, 'AI model updated successfully');
 
+    // Invalidate IntegrationConfig cache so template / provider changes take
+    // effect immediately on the next analysis (instead of after the 60s TTL).
+    getIntegrationConfigService().clearCache();
+
     reply.send({
       success: true,
       data: result.data,
@@ -240,6 +248,8 @@ export const deleteAIModel = async (request: FastifyRequest, reply: FastifyReply
 
     // ✅ Log success ONLY after we know response will succeed
     logger.info({ id }, 'AI model deleted successfully');
+
+    getIntegrationConfigService().clearCache();
 
     reply.send({
       success: true,

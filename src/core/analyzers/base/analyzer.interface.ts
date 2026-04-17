@@ -3,6 +3,7 @@
  */
 
 import type { AnalysisSignal } from '../../models/analysis-result.js';
+import type { ContentPrescanMode } from '../../models/content-prescan.js';
 import type { NormalizedInput } from '../../models/input.js';
 import type { AppConfig } from '../../../config/app.config.js';
 import { getConfig } from '../../../config/index.js';
@@ -45,6 +46,16 @@ export interface IAnalyzer {
    * @returns Analyzer type
    */
   getType(): 'static' | 'dynamic';
+
+  /**
+   * Optional: declare which content prescan modes this analyzer variant is
+   * specialized for. Used by the AnalyzerRegistry to prefer mode-specific
+   * subclasses (e.g. `UrlEntropyUrlAnalyzer` for `'url'`) over the base
+   * implementation when multiple analyzers share the same `getName()`.
+   *
+   * Default (method absent): applies to all modes via the base implementation.
+   */
+  getSupportedPrescanModes?(): ContentPrescanMode[];
 }
 
 /**

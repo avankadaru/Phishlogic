@@ -2,6 +2,7 @@ import { FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { query } from '../../../infrastructure/database/client.js';
 import { getLogger } from '../../../infrastructure/logging/logger.js';
+import { getIntegrationConfigService } from '../../../core/services/integration-config.service.js';
 
 const logger = getLogger();
 
@@ -234,6 +235,10 @@ export async function updateIntegrationTask(
 
     logger.info({ integrationName, updates, userId: request.user?.userId }, 'Integration task updated');
 
+    // Invalidate IntegrationConfig cache so execution-mode / AI-model changes
+    // are honored on the very next analysis instead of waiting for the 60s TTL.
+    getIntegrationConfigService().clearCache();
+
     reply.send({
       success: true,
       message: `Integration "${integrationName}" updated successfully`,
@@ -397,6 +402,8 @@ export async function addIntegrationAnalyzer(
       userId: request.user?.userId,
     }, 'Analyzer added to integration');
 
+    getIntegrationConfigService().clearCache();
+
     reply.status(201).send({
       success: true,
       message: 'Analyzer added successfully',
@@ -491,6 +498,8 @@ export async function updateIntegrationAnalyzer(
       userId: request.user?.userId,
     }, 'Integration analyzer updated');
 
+    getIntegrationConfigService().clearCache();
+
     reply.send({
       success: true,
       message: 'Analyzer options updated successfully',
@@ -550,6 +559,8 @@ export async function deleteIntegrationAnalyzer(
       analyzerName,
       userId: request.user?.userId,
     }, 'Analyzer removed from integration');
+
+    getIntegrationConfigService().clearCache();
 
     reply.send({
       success: true,

@@ -234,9 +234,13 @@ export class VerdictService {
 
   /**
    * Stage 1: Detect critical threats that bypass weighted calculation
-   * Uses signal-config.json to determine which signals have critical override
+   * Uses signal-config.json to determine which signals have critical override.
+   *
+   * Protected so URL-specific subclasses (UrlVerdictService) can layer on
+   * additional rules (e.g. known-host demotion) without duplicating the
+   * base email logic.
    */
-  private detectCriticalThreat(signals: AnalysisSignal[]): { reason: string } | null {
+  protected detectCriticalThreat(signals: AnalysisSignal[]): { reason: string } | null {
     // Check for any signal with criticalOverride flag in config
     for (const signal of signals) {
       if (
@@ -245,6 +249,22 @@ export class VerdictService {
       ) {
         return {
           reason: signal.description || `Critical threat detected: ${signal.signalType}`,
+        };
+      }
+    }
+
+    // Defensive fallback: any critical AttachmentAnalyzer signal must trigger
+    // bypass even if its signalType is missing from signal-config.json. Malicious
+    // attachments are deterministic threats regardless of config coverage.
+    for (const signal of signals) {
+      if (
+        signal.severity === 'critical' &&
+        signal.analyzerName === 'AttachmentAnalyzer' &&
+        typeof signal.signalType === 'string' &&
+        signal.signalType.startsWith('attachment_')
+      ) {
+        return {
+          reason: signal.description || `Critical attachment threat: ${signal.signalType}`,
         };
       }
     }
@@ -260,6 +280,39 @@ export class VerdictService {
     );
     if (criticalUrlThreats.length >= 2) {
       return { reason: 'Multiple critical threat indicators detected' };
+    }
+
+    // Domain-cohesion + urgency combo: classic phishing pattern where the
+    // message impersonates a legitimate context (via link/sender/brand mismatch
+    // or typosquatting) AND uses high-pressure urgency language. Neither alone
+    // is Malicious, but together they are a reliable phishing signature.
+    const DOMAIN_COHESION_SIGNALS = new Set<string>([
+      'link_sender_domain_mismatch',
+      'brand_impersonation_suspected',
+      'sender_mismatch',
+      'typosquat_hostname',
+      'button_text_mismatch',
+    ]);
+    const URGENCY_SIGNALS = new Set<string>([
+      'urgency_language_detected',
+      'emotional_pressure_detected',
+    ]);
+
+    const cohesionSignal = signals.find(
+      (s) =>
+        DOMAIN_COHESION_SIGNALS.has(s.signalType) &&
+        (s.severity === 'high' || s.severity === 'critical')
+    );
+    const urgencySignal = signals.find(
+      (s) =>
+        URGENCY_SIGNALS.has(s.signalType) &&
+        (s.severity === 'high' || s.severity === 'critical')
+    );
+
+    if (cohesionSignal && urgencySignal) {
+      return {
+        reason: `Domain cohesion violation (${cohesionSignal.signalType}) combined with urgency language (${urgencySignal.signalType}) - phishing pattern`,
+      };
     }
 
     return null;
@@ -742,6 +795,9 @@ export class VerdictService {
         'url_shortener',
         'https_missing',
         'suspicious_redirect',
+        'typosquat_hostname',
+        'numeric_ip_hostname',
+        'suspicious_hostname_structure',
       ].includes(signalType)
     ) {
       return 'url';

@@ -28,10 +28,15 @@ export interface AIService {
     config: {
       provider: string;
       model: string;
+      apiKey?: string;
       promptTemplateId?: string;
       temperature?: number;
       maxTokens?: number;
       timeout?: number;
+      /** Enriches logs on legacy-prompt fallback */
+      aiModelId?: string;
+      /** Enriches logs on legacy-prompt fallback */
+      integrationName?: string;
     },
     riskProfile?: EnhancedContentRiskProfile
   ): Promise<{
@@ -115,10 +120,13 @@ export class HybridExecutionStrategy extends BaseExecutionStrategy {
         const aiConfig = {
           provider: context.config.aiProvider,
           model: context.config.aiModel,
+          apiKey: context.config.aiApiKey,
           promptTemplateId: context.config.aiPromptTemplateId,
           temperature: context.config.aiTemperature,
           maxTokens: context.config.aiMaxTokens,
           timeout: aiTimeout,
+          aiModelId: context.config.aiModelId,
+          integrationName: context.integrationName,
         };
 
         // Execute AI with timeout

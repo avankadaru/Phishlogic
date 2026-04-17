@@ -3,10 +3,12 @@
  * Detects suspicious URLs with high entropy (random-looking strings)
  */
 
+import { isIPv4, isIPv6 } from 'node:net';
 import { BaseAnalyzer } from '../base/index.js';
 import type { AnalysisSignal } from '../../models/analysis-result.js';
 import type { NormalizedInput } from '../../models/input.js';
 import { isEmailInput, isUrlInput } from '../../models/input.js';
+import { isKnownBrandTyposquatHost } from '../../constants/typo-domain-blocklist.js';
 
 /**
  * High entropy threshold for detecting suspicious URLs
@@ -57,6 +59,59 @@ export class UrlEntropyAnalyzer extends BaseAnalyzer {
         const urlObj = new URL(url);
         const hostname = urlObj.hostname;
         const pathname = urlObj.pathname;
+        const hostForChecks = hostname.toLowerCase();
+        const rawHostForIp = hostForChecks.replace(/^\[|\]$/g, '');
+
+        if (isKnownBrandTyposquatHost(hostForChecks)) {
+          signals.push(
+            this.createSignal({
+              signalType: 'typosquat_hostname',
+              severity: 'high',
+              confidence: 0.92,
+              description: 'Hostname closely mimics a well-known brand (typosquat or homoglyph)',
+              evidence: { url, hostname: hostForChecks },
+            })
+          );
+        }
+
+        if (isIPv4(rawHostForIp) || isIPv6(rawHostForIp)) {
+          signals.push(
+            this.createSignal({
+              signalType: 'numeric_ip_hostname',
+              severity: 'high',
+              confidence: 0.78,
+              description: 'URL host is a numeric IP address instead of a domain name',
+              evidence: { url, hostname: hostForChecks },
+            })
+          );
+        }
+
+        const labels = hostForChecks.split('.').filter(Boolean);
+        const hyphenCount = (hostForChecks.match(/-/g) || []).length;
+        const nonAscii = /[^\u0020-\u007E]/.test(hostname);
+        const unusualPort =
+          urlObj.port !== '' &&
+          urlObj.port !== '80' &&
+          urlObj.port !== '443' &&
+          urlObj.port !== '8080';
+
+        if (labels.length >= 6 || hyphenCount >= 4 || nonAscii || unusualPort) {
+          const reasons: string[] = [];
+          if (labels.length >= 6) reasons.push('deep_subdomain_chain');
+          if (hyphenCount >= 4) reasons.push('many_hyphens');
+          if (nonAscii) reasons.push('non_ascii_hostname');
+          if (unusualPort) reasons.push('nonstandard_port');
+
+          signals.push(
+            this.createSignal({
+              signalType: 'suspicious_hostname_structure',
+              severity: 'medium',
+              confidence: 0.62,
+              description: 'Hostname or port shows structural patterns common in phishing URLs',
+              evidence: { url, hostname: hostForChecks, reasons, port: urlObj.port || undefined },
+            })
+          );
+        }
 
         // Analyze hostname entropy
         const hostnameEntropy = this.calculateEntropy(hostname);

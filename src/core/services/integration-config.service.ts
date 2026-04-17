@@ -40,6 +40,16 @@ export interface IntegrationConfig {
   aiTimeout?: number;
   fallbackToNative?: boolean;
   isActive: boolean;
+  /**
+   * Which content prescan pipeline to run (email / url / none).
+   * When undefined, the engine falls back to input type.
+   */
+  contentPrescan?: 'email' | 'url' | 'none';
+  /**
+   * How AnalyzerRegistry selects analyzers after whitelist.
+   * When undefined, the engine falls back to input type.
+   */
+  analyzerFilteringMode?: 'email_inbox' | 'inspect_url';
   analyzers: AnalyzerOptions[]; // NEW: Analyzer-specific options
 }
 
@@ -90,6 +100,8 @@ export class IntegrationConfigService {
         it.id as integration_id,
         i.name as integration_name,
         it.execution_mode,
+        it.content_prescan,
+        it.analyzer_filtering_mode,
         it.ai_model_id,
         it.fallback_to_native,
         it.enabled,
@@ -144,6 +156,8 @@ export class IntegrationConfigService {
       aiTimeout: row.ai_timeout != null ? parseInt(row.ai_timeout, 10) : undefined,
       fallbackToNative: row.fallback_to_native !== false,
       isActive: row.enabled !== false,
+      contentPrescan: row.content_prescan ?? undefined,
+      analyzerFilteringMode: row.analyzer_filtering_mode ?? undefined,
       analyzers: row.analyzers || [],
     };
 
@@ -212,6 +226,8 @@ export class IntegrationConfigService {
         it.id as integration_id,
         i.name as integration_name,
         it.execution_mode,
+        it.content_prescan,
+        it.analyzer_filtering_mode,
         it.ai_model_id,
         it.fallback_to_native,
         it.enabled,
@@ -248,6 +264,8 @@ export class IntegrationConfigService {
       aiTimeout: row.ai_timeout != null ? parseInt(row.ai_timeout, 10) : undefined,
       fallbackToNative: row.fallback_to_native !== false,
       isActive: row.enabled !== false,
+      contentPrescan: row.content_prescan ?? undefined,
+      analyzerFilteringMode: row.analyzer_filtering_mode ?? undefined,
       analyzers: [],
     }));
   }

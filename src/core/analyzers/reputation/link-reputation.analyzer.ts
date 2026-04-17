@@ -183,6 +183,19 @@ export class LinkReputationAnalyzer extends BaseAnalyzer {
       }
     }
 
+    // Domain cohesion check: body links pointing to a domain different from
+    // the sender's is a classic phishing pattern. Only applies to email inputs
+    // (URL inputs have no "sender" concept).
+    if (isEmailInput(input)) {
+      const mismatchSignal = this.detectSenderDomainMismatch(
+        input.data.parsed.from?.address,
+        urls
+      );
+      if (mismatchSignal) {
+        signals.push(mismatchSignal);
+      }
+    }
+
     logger.debug({
       msg: 'Link reputation analysis complete',
       urlsChecked: urls.length,
@@ -190,6 +203,129 @@ export class LinkReputationAnalyzer extends BaseAnalyzer {
     });
 
     return signals;
+  }
+
+  /**
+   * Tracker / CDN / ESP roots that legitimately appear as link hosts even when
+   * a brand sends from its own domain. Excluded from mismatch detection to
+   * avoid flagging legitimate marketing mail.
+   */
+  private static readonly ALLOWED_LINK_HOST_ROOTS = new Set<string>([
+    'googleusercontent.com',
+    'sendgrid.net',
+    'mailchimp.com',
+    'list-manage.com',
+    'amazonses.com',
+    'mandrillapp.com',
+    'constantcontact.com',
+    'bit.ly',
+    't.co',
+  ]);
+
+  /**
+   * Small public-suffix allowlist for correct eTLD+1 extraction on common
+   * two-label TLDs. Keeps the check deterministic without pulling in the full
+   * public suffix list.
+   */
+  private static readonly TWO_LABEL_PUBLIC_SUFFIXES = new Set<string>([
+    'co.uk',
+    'co.in',
+    'co.jp',
+    'co.kr',
+    'co.nz',
+    'co.za',
+    'com.au',
+    'com.br',
+    'com.cn',
+    'com.mx',
+    'com.sg',
+    'com.tr',
+    'ac.uk',
+    'gov.uk',
+    'org.uk',
+  ]);
+
+  /**
+   * Extract an eTLD+1 registrable domain. Returns lowercase, or null if input
+   * is malformed.
+   */
+  private extractRegistrableDomain(host: string | undefined | null): string | null {
+    if (!host) return null;
+    const cleaned = host.trim().toLowerCase().replace(/^\*\./, '');
+    if (!cleaned || cleaned.indexOf('.') === -1) return null;
+    const labels = cleaned.split('.').filter((l) => l.length > 0);
+    if (labels.length < 2) return null;
+
+    const lastTwo = labels.slice(-2).join('.');
+    if (
+      labels.length >= 3 &&
+      LinkReputationAnalyzer.TWO_LABEL_PUBLIC_SUFFIXES.has(lastTwo)
+    ) {
+      return labels.slice(-3).join('.');
+    }
+    return lastTwo;
+  }
+
+  /**
+   * Extract hostname from a URL string; returns null for mailto / javascript /
+   * relative / malformed input.
+   */
+  private extractHostname(url: string): string | null {
+    if (!url) return null;
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        return null;
+      }
+      return parsed.hostname || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Compare sender registrable domain against body link registrable domains.
+   * Emits a single `link_sender_domain_mismatch` signal when at least one
+   * externally-hosted link points to a domain that is neither the sender's
+   * registrable domain nor an allow-listed tracker/CDN/ESP.
+   */
+  private detectSenderDomainMismatch(
+    fromAddress: string | undefined,
+    urls: string[]
+  ): AnalysisSignal | null {
+    if (!fromAddress) return null;
+    const atIdx = fromAddress.lastIndexOf('@');
+    if (atIdx === -1) return null;
+    const senderDomain = this.extractRegistrableDomain(fromAddress.slice(atIdx + 1));
+    if (!senderDomain) return null;
+
+    const linkDomains = new Set<string>();
+    for (const url of urls) {
+      const host = this.extractHostname(url);
+      if (!host) continue;
+      const registrable = this.extractRegistrableDomain(host);
+      if (!registrable) continue;
+      if (registrable === senderDomain) continue;
+      if (LinkReputationAnalyzer.ALLOWED_LINK_HOST_ROOTS.has(registrable)) continue;
+      linkDomains.add(registrable);
+    }
+
+    if (linkDomains.size === 0) return null;
+
+    const mismatched = Array.from(linkDomains);
+    const preview = mismatched.slice(0, 3).join(', ');
+    const suffix = mismatched.length > 3 ? `, +${mismatched.length - 3} more` : '';
+
+    return this.createSignal({
+      signalType: 'link_sender_domain_mismatch',
+      severity: 'high',
+      confidence: 0.85,
+      description: `Body link(s) point to a different domain than the sender (${preview}${suffix})`,
+      evidence: {
+        senderDomain,
+        mismatchedLinkDomains: mismatched,
+      },
+    });
   }
 
   /**

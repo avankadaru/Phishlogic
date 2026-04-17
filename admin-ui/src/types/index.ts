@@ -289,6 +289,8 @@ export interface AnalysisSignal {
   severity: 'low' | 'medium' | 'high' | 'critical';
   confidence: number;
   description: string;
+  /** Name of the analyzer that produced this signal (e.g., "AttachmentAnalyzer"). */
+  analyzerName?: string;
   evidence?: {
     enrichedThreats?: {
       inline: EnrichedThreat[];
@@ -310,6 +312,31 @@ export interface AnalysisSignal {
   };
 }
 
+export type PromptSource =
+  | { type: 'template'; id: string; name: string }
+  | {
+      type: 'legacy';
+      reason: 'no_template_id' | 'template_not_found' | 'load_error';
+      templateId?: string;
+    };
+
+export interface AIMetadataFull {
+  provider?: string;
+  model?: string;
+  tokens?: { prompt?: number; completion?: number; total?: number };
+  temperature?: number;
+  latencyMs?: number;
+  costUsd?: number;
+  apiUrl?: string;
+  apiRequest?: unknown;
+  apiResponse?: unknown;
+  rawContent?: string;
+  parseError?: { message: string; position?: number } | null;
+  fallbackReparseUsed?: boolean;
+  /** Which prompt the backend actually used: the configured template, or the legacy fallback. */
+  promptSource?: PromptSource;
+}
+
 export interface Analysis {
   id: string;
   inputType: string;
@@ -320,6 +347,7 @@ export interface Analysis {
   executionMode: string;
   aiProvider?: string;
   aiModel?: string;
+  aiMetadata?: AIMetadataFull;
   processingTimeMs: number;
   costUsd?: number;
   tokensUsed?: number;

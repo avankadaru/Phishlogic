@@ -2,5 +2,7 @@
  * Test setup and global configuration
  */
 
-// Global test setup will go here
+process.env['JWT_SECRET'] =
+  process.env['JWT_SECRET'] || 'test-jwt-secret-minimum-32-characters-long-for-ci';
+
 export {};

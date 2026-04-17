@@ -2,6 +2,7 @@ import { FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { query } from '../../../infrastructure/database/client.js';
 import { getLogger } from '../../../infrastructure/logging/logger.js';
+import { getIntegrationConfigService } from '../../../core/services/integration-config.service.js';
 
 const logger = getLogger();
 
@@ -151,6 +152,10 @@ export async function updateTask(
     );
 
     logger.info({ taskName, updates, userId: request.user?.userId }, 'Task config updated');
+
+    // Invalidate IntegrationConfig cache so task-level changes propagate on the
+    // next analysis without waiting for the 60s TTL.
+    getIntegrationConfigService().clearCache();
 
     reply.send({
       success: true,

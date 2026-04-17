@@ -18,6 +18,7 @@ import type { AnalysisSignal } from '../../models/analysis-result.js';
 import type { NormalizedInput } from '../../models/input.js';
 import { isEmailInput } from '../../models/input.js';
 import { getLogger } from '../../../infrastructure/logging/index.js';
+import { BRAND_TYPOSQUAT_HOSTNAMES } from '../../constants/typo-domain-blocklist.js';
 
 const logger = getLogger();
 
@@ -64,17 +65,6 @@ export class SenderReputationAnalyzer extends BaseAnalyzer {
     'mailinator.com',
     'throwaway.email',
     'temp-mail.org',
-  ]);
-
-  // Known phishing/spam domains (can be expanded or integrated with external API)
-  private blacklistedDomains = new Set([
-    'paypa1.com',
-    'g00gle.com',
-    'amaz0n.com',
-    'faceb00k.com',
-    'appl3.com',
-    'micr0s0ft.com',
-    'yah00.com',
   ]);
 
   // Analyzer-specific options (configurable per integration)
@@ -578,7 +568,7 @@ export class SenderReputationAnalyzer extends BaseAnalyzer {
     };
 
     // Check against local blacklist
-    if (this.blacklistedDomains.has(domain.toLowerCase())) {
+    if (BRAND_TYPOSQUAT_HOSTNAMES.has(domain.toLowerCase())) {
       result.isBlacklisted = true;
       result.reasons.push('Known typosquatting domain');
       result.category = 'phishing';

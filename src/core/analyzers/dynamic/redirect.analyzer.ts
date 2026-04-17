@@ -9,7 +9,7 @@ import type { NormalizedInput } from '../../models/input.js';
 import { isEmailInput, isUrlInput } from '../../models/input.js';
 import { getLogger } from '../../../infrastructure/logging/index.js';
 import type { Browser, Page } from 'playwright';
-import { chromium } from 'playwright';
+import { getBrowserPool } from '../../../infrastructure/browser/browser-pool.js';
 import { getThreatMetadata, type EnrichedThreatPattern } from '../../models/threat-metadata.js';
 import { WhitelistService } from '../../services/whitelist.service.js';
 import { LoginPageDetectionService } from '../../services/login-page-detection.service.js';
@@ -51,7 +51,7 @@ const MAX_REDIRECTS = 5;
  * Redirect Analyzer
  */
 export class RedirectAnalyzer extends BaseAnalyzer {
-  private browser: Browser | null = null;
+  protected browser: Browser | null = null;
   private whitelistService: WhitelistService;
   private loginDetectionService: LoginPageDetectionService;
 
@@ -1473,29 +1473,25 @@ export class RedirectAnalyzer extends BaseAnalyzer {
   }
 
   /**
-   * Get or create browser instance
+   * Get or create browser instance.
+   * Delegates to the shared `BrowserPool` so we don't spawn one chromium
+   * per analyzer. The local `this.browser` field is retained (cached
+   * pool reference) so downstream subclasses / tests observe the same shape.
    */
-  private async getBrowser(): Promise<Browser> {
-    if (!this.browser) {
-      this.browser = await chromium.launch({
-        headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox'],
-        timeout: 45000, // 45 seconds - prevent indefinite hangs
-      });
-
-      logger.info('Playwright browser launched for RedirectAnalyzer');
+  protected async getBrowser(): Promise<Browser> {
+    if (!this.browser || !this.browser.isConnected()) {
+      this.browser = await getBrowserPool().getBrowser('RedirectAnalyzer');
     }
     return this.browser;
   }
 
   /**
-   * Close browser (cleanup)
+   * Close browser (cleanup). The pool owns the process lifecycle; this
+   * simply clears the local cached reference so the next call re-fetches
+   * from the pool (and the pool is what actually calls browser.close()).
    */
   async cleanup(): Promise<void> {
-    if (this.browser) {
-      await this.browser.close();
-      this.browser = null;
-      logger.info('Playwright browser closed for RedirectAnalyzer');
-    }
+    this.browser = null;
+    logger.debug({ msg: 'RedirectAnalyzer browser reference cleared' });
   }
 }

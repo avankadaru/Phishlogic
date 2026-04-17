@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Mail, Loader2, Copy } from 'lucide-react';
+import { Mail, Loader2, Copy, ChevronRight, ChevronDown } from 'lucide-react';
 import api from '@/lib/api';
 import { toast } from '@/lib/toast';
 import { formatDuration, formatErrorWithStatus } from '@/lib/utils';
@@ -11,7 +11,12 @@ import { Select } from '@/components/ui/Select';
 import { Textarea } from '@/components/ui/Textarea';
 import { ScenarioButtons } from '@/components/ScenarioButtons';
 import { ResultDisplay } from '@/components/ResultDisplay';
-import { emailScenarios, EmailScenario } from '@/data/email-scenarios';
+import {
+  emailScenarios,
+  EmailScenario,
+  AuthOverride,
+  buildRawEmail,
+} from '@/data/email-scenarios';
 
 interface AnalysisResult {
   verdict: 'Safe' | 'Suspicious' | 'Malicious';
@@ -28,6 +33,7 @@ export default function EmailTestPage() {
   const navigate = useNavigate();
   const [selectedScenario, setSelectedScenario] = useState<string | null>(null);
   const [executionMode, setExecutionMode] = useState('native');
+  const [authOverride, setAuthOverride] = useState<AuthOverride>('pass');
   const [formData, setFormData] = useState({
     from: '',
     to: '',
@@ -38,6 +44,7 @@ export default function EmailTestPage() {
   const [loading, setLoading] = useState(false);
   const [startTime, setStartTime] = useState<number | null>(null);
   const [elapsed, setElapsed] = useState(0);
+  const [rawPreviewOpen, setRawPreviewOpen] = useState(false);
 
   // Timer for showing elapsed time during analysis
   useEffect(() => {
@@ -55,7 +62,22 @@ export default function EmailTestPage() {
   const handleScenarioClick = (scenario: EmailScenario) => {
     setSelectedScenario(scenario.id);
     setFormData(scenario.data);
+    setAuthOverride(scenario.authOverride ?? 'pass');
   };
+
+  const rawEmailPreview = useMemo(
+    () =>
+      buildRawEmail(
+        {
+          from: formData.from || 'sender@example.com',
+          to: formData.to || 'recipient@example.com',
+          subject: formData.subject || '(no subject)',
+          body: formData.body || '',
+        },
+        authOverride
+      ),
+    [formData, authOverride]
+  );
 
   const handleAnalyze = async () => {
     if (!formData.from || !formData.subject) {
@@ -71,7 +93,7 @@ export default function EmailTestPage() {
       const analysisId = crypto.randomUUID();
       const uiTimestamp = Date.now();
 
-      const rawEmail = `From: ${formData.from}\nTo: ${formData.to}\nSubject: ${formData.subject}\n\n${formData.body}`;
+      const rawEmail = buildRawEmail(formData, authOverride);
 
       const response = await api.post('/v1/analyze/email', {
         analysisId,
@@ -140,17 +162,35 @@ export default function EmailTestPage() {
             />
 
             {/* Execution Mode Selector */}
-            <div className="mt-6">
-              <label className="text-sm font-medium">Execution Mode</label>
-              <Select
-                value={executionMode}
-                onChange={(e) => setExecutionMode(e.target.value)}
-                className="mt-1.5"
-              >
-                <option value="native">Native (Rules-based)</option>
-                <option value="hybrid">Hybrid (AI + Fallback)</option>
-                <option value="ai">AI Only</option>
-              </Select>
+            <div className="mt-6 grid grid-cols-2 gap-4">
+              <div>
+                <label className="text-sm font-medium">Execution Mode</label>
+                <Select
+                  value={executionMode}
+                  onChange={(e) => setExecutionMode(e.target.value)}
+                  className="mt-1.5"
+                >
+                  <option value="native">Native (Rules-based)</option>
+                  <option value="hybrid">Hybrid (AI + Fallback)</option>
+                  <option value="ai">AI Only</option>
+                </Select>
+              </div>
+              <div>
+                <label className="text-sm font-medium">Simulated Authentication</label>
+                <Select
+                  value={authOverride}
+                  onChange={(e) => setAuthOverride(e.target.value as AuthOverride)}
+                  className="mt-1.5"
+                >
+                  <option value="pass">Pass (realistic default)</option>
+                  <option value="softfail">Soft-fail</option>
+                  <option value="fail">Fail (SPF/DKIM/DMARC)</option>
+                  <option value="none">None (no auth header)</option>
+                </Select>
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  Injects an Authentication-Results header so SPF/DKIM/DMARC signals reflect real traffic.
+                </p>
+              </div>
             </div>
 
             {/* Email Form Fields */}
@@ -213,6 +253,31 @@ export default function EmailTestPage() {
                   </>
                 )}
               </Button>
+
+              <div className="rounded-md border border-border">
+                <button
+                  type="button"
+                  onClick={() => setRawPreviewOpen((v) => !v)}
+                  className="flex w-full items-center justify-between px-3 py-2 text-sm font-medium hover:bg-muted"
+                >
+                  <span className="flex items-center gap-2">
+                    {rawPreviewOpen ? (
+                      <ChevronDown className="h-4 w-4" />
+                    ) : (
+                      <ChevronRight className="h-4 w-4" />
+                    )}
+                    Raw email being sent
+                  </span>
+                  <span className="text-[11px] text-muted-foreground">
+                    auth={authOverride}
+                  </span>
+                </button>
+                {rawPreviewOpen && (
+                  <pre className="whitespace-pre-wrap break-all border-t border-border bg-muted/50 px-3 py-2 text-[11px] font-mono max-h-64 overflow-auto">
+                    {rawEmailPreview}
+                  </pre>
+                )}
+              </div>
             </div>
           </CardContent>
         </Card>

@@ -1,14 +1,110 @@
+/**
+ * Simulated authentication override for test emails.
+ *
+ * Real-world attackers rarely produce SPF/DKIM/DMARC=fail — modern bulk
+ * senders (and most attackers) inject Authentication-Results=pass lines. Our
+ * AI prompt explicitly states that auth failure alone must not escalate to
+ * Malicious. So by default every scenario sends auth=pass and relies on
+ * content/URL/domain signals (typosquatting, urgency, credential forms,
+ * suspicious attachments, etc.) to drive verdicts — exactly how our real
+ * analyzers see production traffic.
+ *
+ * One dedicated scenario uses 'fail' to verify the auth-only path
+ * consistently yields Suspicious (never Malicious).
+ */
+export type AuthOverride = 'pass' | 'softfail' | 'fail' | 'none';
+
+export interface ScenarioAttachment {
+  filename: string;
+  /** Defaults to 'application/octet-stream' if omitted. */
+  contentType?: string;
+}
+
 export interface EmailScenario {
   id: string;
   label: string;
   category: 'safe' | 'suspicious' | 'malicious';
   description: string;
+  /** Defaults to 'pass' if omitted. */
+  authOverride?: AuthOverride;
   data: {
     from: string;
     to: string;
     subject: string;
     body: string;
+    attachments?: ScenarioAttachment[];
   };
+}
+
+export function buildAuthenticationResultsHeader(
+  override: AuthOverride,
+  fromDomain: string
+): string | null {
+  if (override === 'none') return null;
+  const mx = 'mx.example.com';
+  switch (override) {
+    case 'pass':
+      return `Authentication-Results: ${mx}; spf=pass smtp.mailfrom=${fromDomain}; dkim=pass header.d=${fromDomain}; dmarc=pass action=none header.from=${fromDomain}`;
+    case 'softfail':
+      return `Authentication-Results: ${mx}; spf=softfail smtp.mailfrom=${fromDomain}; dkim=pass header.d=${fromDomain}; dmarc=pass action=none header.from=${fromDomain}`;
+    case 'fail':
+      return `Authentication-Results: ${mx}; spf=fail smtp.mailfrom=${fromDomain}; dkim=fail header.d=${fromDomain}; dmarc=fail action=quarantine header.from=${fromDomain}`;
+  }
+}
+
+export function extractDomainFromAddress(from: string): string {
+  const match = from.match(/@([^>\s]+)/);
+  return match?.[1] ?? 'example.com';
+}
+
+export function buildRawEmail(
+  data: EmailScenario['data'],
+  override: AuthOverride
+): string {
+  const domain = extractDomainFromAddress(data.from);
+  const authHeader = buildAuthenticationResultsHeader(override, domain);
+  const headerLines: string[] = [];
+  if (authHeader) headerLines.push(authHeader);
+  headerLines.push(`From: ${data.from}`);
+  headerLines.push(`To: ${data.to}`);
+  headerLines.push(`Subject: ${data.subject}`);
+  headerLines.push('MIME-Version: 1.0');
+
+  const attachments = data.attachments ?? [];
+
+  if (attachments.length === 0) {
+    headerLines.push('Content-Type: text/plain; charset=UTF-8');
+    headerLines.push('');
+    headerLines.push(data.body);
+    return headerLines.join('\n');
+  }
+
+  const boundary = `----=_PhishLogicTest_${Date.now()}`;
+  headerLines.push(`Content-Type: multipart/mixed; boundary="${boundary}"`);
+  headerLines.push('');
+
+  const parts: string[] = [];
+
+  parts.push(`--${boundary}`);
+  parts.push('Content-Type: text/plain; charset=UTF-8');
+  parts.push('Content-Transfer-Encoding: 7bit');
+  parts.push('');
+  parts.push(data.body);
+
+  for (const att of attachments) {
+    const contentType = att.contentType ?? 'application/octet-stream';
+    parts.push(`--${boundary}`);
+    parts.push(`Content-Type: ${contentType}; name="${att.filename}"`);
+    parts.push(`Content-Disposition: attachment; filename="${att.filename}"`);
+    parts.push('Content-Transfer-Encoding: base64');
+    parts.push('');
+    // 1-byte stub; AttachmentExtractor/AttachmentAnalyzer key off filename extension.
+    parts.push('AA==');
+  }
+
+  parts.push(`--${boundary}--`);
+
+  return [...headerLines, ...parts].join('\n');
 }
 
 export const emailScenarios: EmailScenario[] = [
@@ -76,30 +172,6 @@ export const emailScenarios: EmailScenario[] = [
     }
   },
   {
-    id: 'suspicious-urgency',
-    label: 'Urgency Tactics',
-    category: 'suspicious',
-    description: 'Creates artificial sense of urgency',
-    data: {
-      from: 'security@account-services.net',
-      to: 'user@example.com',
-      subject: 'URGENT: Account will be closed in 24 hours',
-      body: 'IMMEDIATE ACTION REQUIRED\n\nYour account shows unusual activity and will be permanently closed in 24 hours unless you verify your identity.\n\nClick here to verify now:\nhttp://verify-account-now.com/login\n\nDo not ignore this message or you will lose access to your account forever.'
-    }
-  },
-  {
-    id: 'suspicious-generic',
-    label: 'Generic Greeting',
-    category: 'suspicious',
-    description: 'No personalization, generic greeting',
-    data: {
-      from: 'support@customerservice.info',
-      to: 'user@example.com',
-      subject: 'Your account needs attention',
-      body: 'Dear Customer,\n\nWe have detected suspicious activity on your account. Please verify your information by clicking the link below.\n\nhttp://verify-info.com\n\nCustomer Support Team'
-    }
-  },
-  {
     id: 'suspicious-hyphens',
     label: 'Many Hyphens',
     category: 'suspicious',
@@ -111,8 +183,47 @@ export const emailScenarios: EmailScenario[] = [
       body: 'Dear User,\n\nA security update is required for your account. Please click the link below to complete the verification.\n\nhttp://account-verify-security-update.com/login\n\nThank you,\nSecurity Team'
     }
   },
+  {
+    id: 'suspicious-prize',
+    label: 'Prize Scam',
+    category: 'suspicious',
+    description: 'Fake prize notification, too good to be true',
+    data: {
+      from: 'winner@prize-notification.net',
+      to: 'lucky@example.com',
+      subject: 'CONGRATULATIONS! You Won $1,000,000',
+      body: 'CONGRATULATIONS!!!\n\nYou have been selected as the winner of our $1,000,000 Grand Prize!\n\nTo claim your prize, click here and enter your banking information:\nhttp://claim-prize-now.net/winner\n\nYou must claim within 24 hours or the prize will be forfeited to another winner.\n\nPrize Commission International'
+    }
+  },
+  {
+    id: 'suspicious-auth-fail',
+    label: 'Auth Fail (SPF/DKIM/DMARC)',
+    category: 'suspicious',
+    description:
+      'Benign-looking content but SPF/DKIM/DMARC all fail. Should yield Suspicious — NEVER Malicious — per auth_guidance policy.',
+    authOverride: 'fail',
+    data: {
+      from: 'billing@acme.com',
+      to: 'customer@example.com',
+      subject: 'Your monthly Acme statement is ready',
+      body: 'Hello,\n\nYour monthly Acme statement is now available in your account dashboard.\n\nLog in at https://www.acme.com/account to view details.\n\nThanks,\nAcme Billing'
+    }
+  },
 
   // Malicious Emails
+  {
+    id: 'malicious-generic',
+    label: 'Generic Greeting',
+    category: 'malicious',
+    description:
+      'Generic greeting with credential-harvesting link on look-alike support domain — classic phishing pattern',
+    data: {
+      from: 'support@customerservice.info',
+      to: 'user@example.com',
+      subject: 'Your account needs attention',
+      body: 'Dear Customer,\n\nWe have detected suspicious activity on your account. Please verify your information by clicking the link below.\n\nhttp://verify-info.com\n\nCustomer Support Team'
+    }
+  },
   {
     id: 'malicious-paypal',
     label: 'PayPal Phishing',
@@ -126,15 +237,16 @@ export const emailScenarios: EmailScenario[] = [
     }
   },
   {
-    id: 'malicious-ceo-fraud',
-    label: 'CEO Fraud',
+    id: 'malicious-urgency',
+    label: 'Urgency Tactics',
     category: 'malicious',
-    description: 'Impersonates executive, requests urgent wire transfer',
+    description:
+      'Account-closure urgency with credential-harvesting link — classic phishing pattern',
     data: {
-      from: 'ceo@company-mail.com',
-      to: 'finance@example.com',
-      subject: 'URGENT: Wire Transfer Needed',
-      body: 'Hi,\n\nI need you to process an urgent wire transfer immediately. We are closing an acquisition deal and need to send $50,000 to the following account:\n\nAccount: 123456789\nRouting: 987654321\nBank: International Trust Bank\n\nThis is time-sensitive. Please handle this discreetly and confirm once done.\n\n- CEO'
+      from: 'security@account-services.net',
+      to: 'user@example.com',
+      subject: 'URGENT: Account will be closed in 24 hours',
+      body: 'IMMEDIATE ACTION REQUIRED\n\nYour account shows unusual activity and will be permanently closed in 24 hours unless you verify your identity.\n\nClick here to verify now:\nhttp://verify-account-now.com/login\n\nDo not ignore this message or you will lose access to your account forever.'
     }
   },
   {
@@ -146,7 +258,10 @@ export const emailScenarios: EmailScenario[] = [
       from: 'legal@law-firm-notice.com',
       to: 'user@example.com',
       subject: 'LEGAL NOTICE - Court Document Attached',
-      body: 'IMPORTANT LEGAL NOTICE\n\nYou have been named in a lawsuit. Please review the attached court document immediately.\n\nATTACHMENT: court_document_2026.pdf.exe\n\nFailure to respond within 48 hours may result in default judgment against you.\n\nLaw Firm LLC'
+      body: 'IMPORTANT LEGAL NOTICE\n\nYou have been named in a lawsuit. Please review the attached court document immediately.\n\nATTACHMENT: court_document_2026.pdf.exe\n\nFailure to respond within 48 hours may result in default judgment against you.\n\nLaw Firm LLC',
+      attachments: [
+        { filename: 'court_document_2026.pdf.exe', contentType: 'application/octet-stream' },
+      ],
     }
   },
   {
@@ -159,30 +274,6 @@ export const emailScenarios: EmailScenario[] = [
       to: 'user@example.com',
       subject: 'Security Alert: New sign-in from unknown device',
       body: 'Google detected a new sign-in to your account from an unknown device.\n\nLocation: Russia\nDevice: Windows PC\nTime: March 9, 2026 at 3:42 AM\n\nIf this was not you, secure your account immediately:\nhttp://g00gle.com/security/signin\n\nEnter your email and password to review this activity.\n\nGoogle Security Team'
-    }
-  },
-  {
-    id: 'malicious-invoice',
-    label: 'Fake Invoice',
-    category: 'malicious',
-    description: 'Fake invoice with suspicious link',
-    data: {
-      from: 'billing@inv0ices.com',
-      to: 'accounts@example.com',
-      subject: 'Invoice #INV-2026-0309 - Payment Overdue',
-      body: 'PAYMENT OVERDUE NOTICE\n\nInvoice #INV-2026-0309\nAmount Due: $2,847.50\nDue Date: March 1, 2026\n\nYour payment is 8 days overdue. Late fees of $150/day are accruing.\n\nView invoice and pay now:\nhttp://inv0ices.com/pay/INV-2026-0309\n\nAccounting Department'
-    }
-  },
-  {
-    id: 'malicious-prize',
-    label: 'Prize Scam',
-    category: 'malicious',
-    description: 'Fake prize notification, too good to be true',
-    data: {
-      from: 'winner@prize-notification.net',
-      to: 'lucky@example.com',
-      subject: 'CONGRATULATIONS! You Won $1,000,000',
-      body: 'CONGRATULATIONS!!!\n\nYou have been selected as the winner of our $1,000,000 Grand Prize!\n\nTo claim your prize, click here and enter your banking information:\nhttp://claim-prize-now.net/winner\n\nYou must claim within 24 hours or the prize will be forfeited to another winner.\n\nPrize Commission International'
     }
   },
 ];

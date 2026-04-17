@@ -2,6 +2,7 @@ import { FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { query } from '../../../infrastructure/database/client.js';
 import { getLogger } from '../../../infrastructure/logging/logger.js';
+import { getIntegrationConfigService } from '../../../core/services/integration-config.service.js';
 
 const logger = getLogger();
 
@@ -45,7 +46,8 @@ const PromptTemplateUpdateSchema = PromptTemplateBaseSchema.partial();
 const VALID_VARIABLES = [
   'sender_email', 'sender_domain', 'display_name', 'reply_to', 'subject', 'body',
   'body_snippet', 'body_preview', 'body_truncated', 'spf_status', 'dkim_status',
-  'dmarc_status', 'auth_guidance', 'auth_verification_note', 'is_role_account', 'is_disposable', 'domain_age', 'domain_age_days',
+  'dmarc_status', 'auth_guidance', 'auth_verification_note', 'role_guidance',
+  'is_role_account', 'is_disposable', 'domain_age', 'domain_age_days',
   'urgency_score', 'urgency_indicators', 'urgency_phrases', 'urgency_detected',
   'link_count', 'links', 'top_links', 'suspicious_links', 'suspicious_links_summary',
   'external_domains', 'all_domains', 'suspicious_domains', 'typosquatting_detected',
@@ -243,6 +245,10 @@ export async function createPromptTemplate(
       costTier
     }, 'Prompt template created');
 
+    // A newly created template may be linked to an AI model immediately; bust
+    // the IntegrationConfig cache so subsequent runs see the new row.
+    getIntegrationConfigService().clearCache();
+
     reply.status(201).send({
       success: true,
       template: result.rows[0],
@@ -375,6 +381,10 @@ export async function updatePromptTemplate(
 
     logger.info({ templateId: id, name: result.rows[0].name }, 'Prompt template updated');
 
+    // Template body changes must take effect immediately so the AI call next
+    // runs uses the edited text instead of the previously-cached version.
+    getIntegrationConfigService().clearCache();
+
     reply.send({
       success: true,
       template: result.rows[0],
@@ -460,6 +470,8 @@ export async function deletePromptTemplate(
     }
 
     logger.info({ templateId: id, templateName: result.rows[0].name }, 'Prompt template deleted');
+
+    getIntegrationConfigService().clearCache();
 
     reply.send({
       success: true,

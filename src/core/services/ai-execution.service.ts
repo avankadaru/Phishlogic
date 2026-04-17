@@ -16,6 +16,7 @@
 
 import type { NormalizedInput } from '../models/input.js';
 import { isEmailInput, isUrlInput } from '../models/input.js';
+import { getKnownDomainPolicy } from '../policies/known-domain.policy.js';
 import type { AnalysisSignal, SignalSeverity } from '../models/analysis-result.js';
 import type { AIMetadata } from './analysis-persistence.service.js';
 import type { EnhancedContentRiskProfile } from '../analyzers/risk/content-risk.analyzer.js';
@@ -84,6 +85,46 @@ export interface AIProviderConfig {
   maxTokens?: number;
   timeout?: number;
   promptTemplateId?: string; // Optional template override
+  /** Optional AI model id used for log enrichment when legacy fallback happens */
+  aiModelId?: string;
+  /** Optional integration name used for log enrichment when legacy fallback happens */
+  integrationName?: string;
+}
+
+/**
+ * Parse error info - set on JSON parse failure
+ */
+export interface AIParseError {
+  message: string;
+  position?: number;
+}
+
+/**
+ * Records which prompt the run actually used, so the Debug UI can
+ * show "template X" vs "legacy fallback, reason=...". Stored inside
+ * ai_metadata JSONB - no schema migration required.
+ */
+export type PromptSource =
+  | { type: 'template'; id: string; name: string }
+  | {
+      type: 'legacy';
+      reason: 'no_template_id' | 'template_not_found' | 'load_error';
+      templateId?: string;
+    };
+
+/**
+ * Provider debug blob - captured for every AI call so we can surface
+ * the actual request, raw response, and any parse error in debug views.
+ * API keys live in headers or URL query params and are never captured here.
+ */
+export interface AIProviderDebug {
+  apiUrl: string;
+  apiRequest: unknown;
+  apiResponse: unknown;
+  rawContent: string;
+  parseError: AIParseError | null;
+  fallbackReparseUsed: boolean;
+  promptSource: PromptSource;
 }
 
 /**
@@ -97,7 +138,19 @@ interface AIResponse {
     totalTokens: number;
     latencyMs: number;
   };
+  debug: AIProviderDebug;
 }
+
+/**
+ * Result of parsing an AI response body
+ */
+interface ParseResult {
+  signals: AnalysisSignal[];
+  parseError: AIParseError | null;
+}
+
+/** Maximum stored size (in bytes/chars) for apiResponse blob and rawContent */
+const MAX_STORED_BLOB_BYTES = 64 * 1024;
 
 /**
  * AI Execution Service
@@ -149,6 +202,13 @@ export class AIExecutionService {
         temperature: config.temperature || 0.7,
         latencyMs,
         costUsd,
+        apiUrl: response.debug.apiUrl,
+        apiRequest: response.debug.apiRequest,
+        apiResponse: this.truncateForStorage(response.debug.apiResponse, MAX_STORED_BLOB_BYTES),
+        rawContent: this.truncateString(response.debug.rawContent, MAX_STORED_BLOB_BYTES),
+        parseError: response.debug.parseError,
+        fallbackReparseUsed: response.debug.fallbackReparseUsed,
+        promptSource: response.debug.promptSource,
       };
 
       logger.info({
@@ -206,7 +266,11 @@ export class AIExecutionService {
     const apiUrl = 'https://api.anthropic.com/v1/messages';
 
     try {
-      const { systemPrompt, userPrompt } = await this.buildPrompt(input, config, riskProfile);
+      const { systemPrompt, userPrompt, promptSource } = await this.buildPrompt(
+        input,
+        config,
+        riskProfile
+      );
       const startTime = Date.now();
 
       // Build messages array with optional system prompt
@@ -217,6 +281,13 @@ export class AIExecutionService {
       }
       messages.push({ role: 'user', content: userPrompt });
 
+      const requestBody = {
+        model: config.model,
+        max_tokens: config.maxTokens || 4096,
+        temperature: config.temperature || 0.7,
+        messages,
+      };
+
       const response = await fetch(apiUrl, {
         method: 'POST',
         headers: {
@@ -224,12 +295,7 @@ export class AIExecutionService {
           'x-api-key': config.apiKey,
           'anthropic-version': '2023-06-01',
         },
-        body: JSON.stringify({
-          model: config.model,
-          max_tokens: config.maxTokens || 4096,
-          temperature: config.temperature || 0.7,
-          messages,
-        }),
+        body: JSON.stringify(requestBody),
         signal: config.timeout ? AbortSignal.timeout(config.timeout) : undefined,
       });
 
@@ -240,18 +306,30 @@ export class AIExecutionService {
 
       const data: any = await response.json();
       const latencyMs = Date.now() - startTime;
+      const rawContent: string = data?.content?.[0]?.text ?? '';
 
       // Parse response to signals
-      let signals = this.parseAnthropicResponse(data.content[0].text, input);
+      const primary = this.parseAnthropicResponse(rawContent, input);
+      let signals = primary.signals;
+      let parseError = primary.parseError;
+      let fallbackReparseUsed = false;
 
       // FALLBACK: If parsing failed (empty signals), try re-parsing
-      if (signals.length === 0 && data.content[0].text.length > 0) {
+      if (signals.length === 0 && rawContent.length > 0) {
         logger.warn({
           msg: 'Initial parsing produced zero signals - attempting fallback re-parse',
           provider: 'anthropic',
         });
 
-        signals = await this.fallbackReparse(data.content[0].text, config);
+        const fallback = await this.fallbackReparse(rawContent, config);
+        if (fallback.signals.length > 0) {
+          signals = fallback.signals;
+          fallbackReparseUsed = true;
+          // parseError remains set from the primary attempt so the UI
+          // can still see why the first parse failed.
+        } else if (fallback.parseError) {
+          parseError = fallback.parseError;
+        }
       }
 
       return {
@@ -261,6 +339,15 @@ export class AIExecutionService {
           completionTokens: data.usage.output_tokens,
           totalTokens: data.usage.input_tokens + data.usage.output_tokens,
           latencyMs,
+        },
+        debug: {
+          apiUrl: this.sanitizeApiUrl(apiUrl),
+          apiRequest: requestBody,
+          apiResponse: data,
+          rawContent,
+          parseError,
+          fallbackReparseUsed,
+          promptSource,
         },
       };
     } catch (error) {
@@ -288,7 +375,11 @@ export class AIExecutionService {
     const apiUrl = 'https://api.openai.com/v1/chat/completions';
 
     try {
-      const { systemPrompt, userPrompt } = await this.buildPrompt(input, config, riskProfile);
+      const { systemPrompt, userPrompt, promptSource } = await this.buildPrompt(
+        input,
+        config,
+        riskProfile
+      );
       const startTime = Date.now();
 
       // Build messages with system prompt
@@ -303,18 +394,20 @@ export class AIExecutionService {
       }
       messages.push({ role: 'user', content: userPrompt });
 
+      const requestBody = {
+        model: config.model,
+        max_tokens: config.maxTokens || 4096,
+        temperature: config.temperature || 0.7,
+        messages,
+      };
+
       const response = await fetch(apiUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${config.apiKey}`,
         },
-        body: JSON.stringify({
-          model: config.model,
-          max_tokens: config.maxTokens || 4096,
-          temperature: config.temperature || 0.7,
-          messages,
-        }),
+        body: JSON.stringify(requestBody),
         signal: config.timeout ? AbortSignal.timeout(config.timeout) : undefined,
       });
 
@@ -325,18 +418,28 @@ export class AIExecutionService {
 
       const data: any = await response.json();
       const latencyMs = Date.now() - startTime;
+      const rawContent: string = data?.choices?.[0]?.message?.content ?? '';
 
       // Parse response to signals
-      let signals = this.parseOpenAIResponse(data.choices[0].message.content, input);
+      const primary = this.parseOpenAIResponse(rawContent, input);
+      let signals = primary.signals;
+      let parseError = primary.parseError;
+      let fallbackReparseUsed = false;
 
       // FALLBACK: If parsing failed (empty signals), try re-parsing
-      if (signals.length === 0 && data.choices[0].message.content.length > 0) {
+      if (signals.length === 0 && rawContent.length > 0) {
         logger.warn({
           msg: 'Initial parsing produced zero signals - attempting fallback re-parse',
           provider: 'openai',
         });
 
-        signals = await this.fallbackReparse(data.choices[0].message.content, config);
+        const fallback = await this.fallbackReparse(rawContent, config);
+        if (fallback.signals.length > 0) {
+          signals = fallback.signals;
+          fallbackReparseUsed = true;
+        } else if (fallback.parseError) {
+          parseError = fallback.parseError;
+        }
       }
 
       return {
@@ -346,6 +449,15 @@ export class AIExecutionService {
           completionTokens: data.usage.completion_tokens,
           totalTokens: data.usage.total_tokens,
           latencyMs,
+        },
+        debug: {
+          apiUrl: this.sanitizeApiUrl(apiUrl),
+          apiRequest: requestBody,
+          apiResponse: data,
+          rawContent,
+          parseError,
+          fallbackReparseUsed,
+          promptSource,
         },
       };
     } catch (error) {
@@ -373,28 +485,34 @@ export class AIExecutionService {
     const apiUrl = `https://generativelanguage.googleapis.com/v1/models/${config.model}:generateContent?key=${config.apiKey}`;
 
     try {
-      const { systemPrompt, userPrompt } = await this.buildPrompt(input, config, riskProfile);
+      const { systemPrompt, userPrompt, promptSource } = await this.buildPrompt(
+        input,
+        config,
+        riskProfile
+      );
       const startTime = Date.now();
 
       // Combine system and user prompts for Google (it doesn't have separate system prompts)
       const combinedPrompt = systemPrompt ? `${systemPrompt}\n\n---\n\n${userPrompt}` : userPrompt;
+
+      const requestBody = {
+        contents: [
+          {
+            parts: [{ text: combinedPrompt }],
+          },
+        ],
+        generationConfig: {
+          temperature: config.temperature || 0.7,
+          maxOutputTokens: config.maxTokens || 4096,
+        },
+      };
 
       const response = await fetch(apiUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          contents: [
-            {
-              parts: [{ text: combinedPrompt }],
-            },
-          ],
-          generationConfig: {
-            temperature: config.temperature || 0.7,
-            maxOutputTokens: config.maxTokens || 4096,
-          },
-        }),
+        body: JSON.stringify(requestBody),
         signal: config.timeout ? AbortSignal.timeout(config.timeout) : undefined,
       });
 
@@ -405,13 +523,16 @@ export class AIExecutionService {
 
       const data: any = await response.json();
       const latencyMs = Date.now() - startTime;
+      const rawContent: string = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
 
       // Parse response to signals
-      let signals = this.parseGoogleResponse(data.candidates[0].content.parts[0].text, input);
+      const primary = this.parseGoogleResponse(rawContent, input);
+      const signals = primary.signals;
+      const parseError = primary.parseError;
 
       // FALLBACK: If parsing failed (empty signals), try re-parsing
       // Note: Google fallback not implemented in fallbackReparse method yet
-      if (signals.length === 0 && data.candidates[0].content.parts[0].text.length > 0) {
+      if (signals.length === 0 && rawContent.length > 0) {
         logger.warn({
           msg: 'Initial parsing produced zero signals - fallback re-parse not supported for Google',
           provider: 'google',
@@ -425,6 +546,15 @@ export class AIExecutionService {
           completionTokens: data.usageMetadata?.candidatesTokenCount || 0,
           totalTokens: data.usageMetadata?.totalTokenCount || 0,
           latencyMs,
+        },
+        debug: {
+          apiUrl: this.sanitizeApiUrl(apiUrl),
+          apiRequest: requestBody,
+          apiResponse: data,
+          rawContent,
+          parseError,
+          fallbackReparseUsed: false,
+          promptSource,
         },
       };
     } catch (error) {
@@ -442,9 +572,19 @@ export class AIExecutionService {
   }
 
   /**
-   * Load prompt template from database
+   * Load prompt template from database.
+   *
+   * Returns:
+   *   { ok: true, template } on success,
+   *   { ok: false, reason: 'not_found' } when the id does not exist or is soft-deleted,
+   *   { ok: false, reason: 'load_error' } when the DB query throws.
    */
-  private async loadTemplate(templateId: string): Promise<PromptTemplate | null> {
+  private async loadTemplate(
+    templateId: string
+  ): Promise<
+    | { ok: true; template: PromptTemplate }
+    | { ok: false; reason: 'not_found' | 'load_error' }
+  > {
     try {
       const result = await query(
         `SELECT id, name, system_prompt AS "systemPrompt", user_prompt AS "userPrompt",
@@ -456,13 +596,13 @@ export class AIExecutionService {
 
       if (result.rows.length === 0) {
         logger.warn({ templateId }, 'Prompt template not found');
-        return null;
+        return { ok: false, reason: 'not_found' };
       }
 
-      return result.rows[0] as PromptTemplate;
+      return { ok: true, template: result.rows[0] as PromptTemplate };
     } catch (error) {
       logger.error({ error, templateId }, 'Failed to load prompt template');
-      return null;
+      return { ok: false, reason: 'load_error' };
     }
   }
 
@@ -497,6 +637,18 @@ export class AIExecutionService {
         '(credential forms, typosquatting, phishing content, etc.).';
 
       vars['auth_guidance'] = AUTH_GUIDANCE;
+
+      // role_guidance is always set for email inputs so {{role_guidance}} never renders empty
+      const ROLE_GUIDANCE =
+        'IMPORTANT — Role Address Context: Role-based addresses such as ' +
+        'noreply@, notifications@, auto-confirm@, service@, billing@, support@ ' +
+        'are standard practice for legitimate transactional senders (banks, ' +
+        'retailers, SaaS platforms, code hosts). Role-account alone MUST NOT ' +
+        'drive a Suspicious verdict without additional corroborating indicators ' +
+        '(typosquatting, urgency tactics, credential forms, unusual attachments, ' +
+        'grammar issues, suspicious links).';
+
+      vars['role_guidance'] = ROLE_GUIDANCE;
       vars['auth_verification_note'] = ''; // overwritten below if statuses are missing
 
       // Risk profile data
@@ -603,6 +755,47 @@ export class AIExecutionService {
           vars['is_suspicious'] = link.isSuspicious;
         }
       }
+
+      // Live URL fetch payload. These placeholders allow url-inspect prompts
+      // to reason about what the headless browser actually observed:
+      //   {{url.finalUrl}}              - end of redirect chain
+      //   {{url.redirectChain}}         - comma-separated navigation chain
+      //   {{url.hasAutomaticDownload}}  - browser-triggered download flag
+      //   {{url.renderedHtmlExcerpt}}   - truncated DOM of rendered page
+      //   {{url.hasPasswordField}}      - credential form observed
+      //   {{url.scriptSources}}         - external script src list
+      //   {{url.iframeSources}}         - iframe src list
+      //   {{url.status}}                - HTTP response status
+      const fetch = riskProfile?.urlFetch;
+      vars['url.requestedUrl'] = fetch?.requestedUrl ?? input.data.url;
+      vars['url.finalUrl'] = fetch?.finalUrl ?? '';
+      vars['url.status'] = fetch?.status != null ? String(fetch.status) : '';
+      vars['url.redirectChain'] = fetch ? fetch.redirectChain.join(' -> ') : '';
+      vars['url.redirectHops'] = fetch ? String(fetch.redirectChain.length) : '0';
+      vars['url.hasAutomaticDownload'] = fetch ? String(fetch.hasAutomaticDownload) : 'false';
+      vars['url.hasPasswordField'] = fetch ? String(fetch.hasPasswordField) : 'false';
+      vars['url.renderedHtmlExcerpt'] = fetch?.renderedHtmlExcerpt ?? '';
+      vars['url.scriptSources'] = fetch ? fetch.scriptSources.slice(0, 20).join(', ') : '';
+      vars['url.iframeSources'] = fetch ? fetch.iframeSources.slice(0, 20).join(', ') : '';
+      vars['url.fetchError'] = fetch?.fetchError ?? '';
+
+      // Known-domain policy hints. Synchronous (Tranco snapshot +
+      // KNOWN_AUTH_ORIGINS only); WHOIS is not issued from the prompt path —
+      // the URL analyzer subclasses perform any needed WHOIS enrichment.
+      try {
+        const policy = getKnownDomainPolicy();
+        const isKnown = policy.isKnownSafeUrl(input.data.url);
+        vars['url.isKnownSafeHost'] = String(isKnown);
+        vars['url.registrableDomain'] =
+          policy.extractRegistrableDomain(policy.extractHostname(input.data.url) ?? '') ?? '';
+      } catch {
+        vars['url.isKnownSafeHost'] = '';
+        vars['url.registrableDomain'] = '';
+      }
+
+      // Domain age placeholder: populated only if the URL analyzer pipeline
+      // already enriched the profile (we don't issue WHOIS from here).
+      vars['url.domainAgeDays'] = '';
     }
 
     return vars;
@@ -614,9 +807,12 @@ export class AIExecutionService {
   private interpolateTemplate(template: string, variables: Record<string, any>): string {
     let result = template;
 
-    // Handle simple {{variable}} replacements
+    // Handle simple {{variable}} replacements. Keys may contain '.' (e.g.
+    // "url.finalUrl"), which is a regex metachar; escape it explicitly so
+    // "{{url.finalUrl}}" does not also match "{{urlXfinalUrl}}".
+    const escapeRegex = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     Object.entries(variables).forEach(([key, value]) => {
-      const regex = new RegExp(`\\{\\{${key}\\}\\}`, 'g');
+      const regex = new RegExp(`\\{\\{\\s*${escapeRegex(key)}\\s*\\}\\}`, 'g');
       const replacement = value !== undefined && value !== null ? String(value) : '';
       result = result.replace(regex, replacement);
     });
@@ -656,35 +852,86 @@ export class AIExecutionService {
   /**
    * Build analysis prompt for AI with enhanced context
    * Now supports prompt templates!
+   *
+   * Returns the resolved prompt plus a `promptSource` record. Callers put
+   * this in the AI debug blob so the Admin UI can show whether the
+   * configured template was honored or we fell back to the legacy string.
    */
   private async buildPrompt(
     input: NormalizedInput,
     config: AIProviderConfig,
     riskProfile?: EnhancedContentRiskProfile
-  ): Promise<{ systemPrompt?: string; userPrompt: string }> {
-    // Try to load template if specified
-    if (config.promptTemplateId) {
-      const template = await this.loadTemplate(config.promptTemplateId);
-      if (template) {
-        const variables = this.buildTemplateVariables(input, riskProfile);
-        const userPrompt = this.interpolateTemplate(template.userPrompt, variables);
-        const systemPrompt = template.systemPrompt
-          ? this.interpolateTemplate(template.systemPrompt, variables)
-          : undefined;
-
-        logger.info({ templateId: config.promptTemplateId, templateName: template.name },
-          'Using prompt template');
-
-        return { systemPrompt, userPrompt };
-      } else {
-        logger.warn({ templateId: config.promptTemplateId },
-          'Template not found, falling back to default prompt');
-      }
+  ): Promise<{
+    systemPrompt?: string;
+    userPrompt: string;
+    promptSource: PromptSource;
+  }> {
+    if (!config.promptTemplateId) {
+      logger.warn(
+        {
+          msg: 'No prompt template linked - using legacy fallback prompt',
+          integrationName: config.integrationName,
+          aiModelId: config.aiModelId,
+          provider: config.provider,
+          model: config.model,
+          reason: 'no_template_id',
+        },
+        'Legacy prompt fallback'
+      );
+      return {
+        userPrompt: this.buildLegacyPrompt(input, riskProfile),
+        promptSource: { type: 'legacy', reason: 'no_template_id' },
+      };
     }
 
-    // Fall back to legacy prompt generation
-    const legacyPrompt = this.buildLegacyPrompt(input, riskProfile);
-    return { userPrompt: legacyPrompt };
+    const loadResult = await this.loadTemplate(config.promptTemplateId);
+    if (!loadResult.ok) {
+      const reason: 'template_not_found' | 'load_error' =
+        loadResult.reason === 'load_error' ? 'load_error' : 'template_not_found';
+      logger.warn(
+        {
+          msg: 'Configured prompt template could not be loaded - using legacy fallback',
+          integrationName: config.integrationName,
+          aiModelId: config.aiModelId,
+          promptTemplateId: config.promptTemplateId,
+          provider: config.provider,
+          model: config.model,
+          reason,
+        },
+        'Legacy prompt fallback'
+      );
+      return {
+        userPrompt: this.buildLegacyPrompt(input, riskProfile),
+        promptSource: {
+          type: 'legacy',
+          reason,
+          templateId: config.promptTemplateId,
+        },
+      };
+    }
+
+    const template = loadResult.template;
+    const variables = this.buildTemplateVariables(input, riskProfile);
+    const userPrompt = this.interpolateTemplate(template.userPrompt, variables);
+    const systemPrompt = template.systemPrompt
+      ? this.interpolateTemplate(template.systemPrompt, variables)
+      : undefined;
+
+    logger.info(
+      {
+        templateId: template.id,
+        templateName: template.name,
+        integrationName: config.integrationName,
+        aiModelId: config.aiModelId,
+      },
+      'Using prompt template'
+    );
+
+    return {
+      systemPrompt,
+      userPrompt,
+      promptSource: { type: 'template', id: template.id, name: template.name },
+    };
   }
 
   /**
@@ -718,7 +965,8 @@ Body: ${input.data.parsed?.body?.text || input.data.parsed?.body?.html || 'empty
 - Role Account: ${riskProfile.sender.isRole}
 - Disposable Email: ${riskProfile.sender.isDisposable}
 - Authentication: SPF=${spf}, DKIM=${dkim}, DMARC=${dmarc}
-- Auth Context: SPF/DKIM failures are common on legitimate emails (forwarding breaks SPF; footer injection breaks DKIM). Auth failure alone = Suspicious only — not Malicious.`;
+- Auth Context: SPF/DKIM failures are common on legitimate emails (forwarding breaks SPF; footer injection breaks DKIM). Auth failure alone = Suspicious only — not Malicious.
+- Role Context: Role-based addresses (noreply@, notifications@, auto-confirm@, service@, billing@, support@) are standard for legitimate transactional senders. Role-account alone MUST NOT drive a Suspicious verdict without corroborating indicators (typosquatting, urgency, credential forms, unusual attachments, suspicious links).`;
 
           if (missingAuth) {
             prompt += ` Statuses marked "none" not in headers — verify via DNS TXT records and WHOIS for ${riskProfile.sender.domain}.`;
@@ -850,60 +1098,367 @@ Focus on: domain reputation, entropy, typosquatting, suspicious TLDs, URL patter
   /**
    * Parse Anthropic response to signals
    */
-  private parseAnthropicResponse(responseText: string, input: NormalizedInput): AnalysisSignal[] {
+  private parseAnthropicResponse(responseText: string, input: NormalizedInput): ParseResult {
     return this.parseAIResponse(responseText, 'anthropic', input);
   }
 
   /**
    * Parse OpenAI response to signals
    */
-  private parseOpenAIResponse(responseText: string, input: NormalizedInput): AnalysisSignal[] {
+  private parseOpenAIResponse(responseText: string, input: NormalizedInput): ParseResult {
     return this.parseAIResponse(responseText, 'openai', input);
   }
 
   /**
    * Parse Google response to signals
    */
-  private parseGoogleResponse(responseText: string, input: NormalizedInput): AnalysisSignal[] {
+  private parseGoogleResponse(responseText: string, input: NormalizedInput): ParseResult {
     return this.parseAIResponse(responseText, 'google', input);
   }
 
   /**
-   * Generic AI response parser
+   * Extract a single top-level JSON value from a possibly-messy AI response.
+   *
+   * Handles:
+   * 1. Surrounding whitespace.
+   * 2. Markdown code fences (```json ... ``` or ``` ... ```).
+   * 3. Responses where the entire trimmed body is already valid JSON
+   *    (array OR object - both are returned as-is).
+   * 4. Responses with prose before/after a JSON object / array by doing
+   *    a balanced scan that respects string literals and escape sequences.
+   *
+   * Returns the parsed JSON value (array, object, primitive), or null if
+   * nothing parseable is found.
    */
-  private parseAIResponse(responseText: string, _provider: string, input: NormalizedInput): AnalysisSignal[] {
+  private extractJsonValue(text: string): unknown | null {
+    let s = (text ?? '').trim();
+    if (!s) return null;
+
+    // Strip a surrounding markdown fence: ```json\n...\n``` or ```\n...\n```
+    const fence = s.match(/^```(?:json|JSON)?\s*([\s\S]*?)\s*```$/);
+    if (fence && fence[1]) {
+      s = fence[1].trim();
+    }
+
+    // Fast path: the whole payload is already valid JSON (object OR array).
+    // CRITICAL: must succeed for the object-root case so we do NOT walk into
+    // a nested `redFlags` array and misread it as the signal list.
     try {
-      // Extract JSON array from response
-      const jsonMatch = responseText.match(/\[[\s\S]*\]/);
-      if (!jsonMatch) {
-        logger.warn({ msg: 'No JSON array found in AI response', provider: _provider });
-        return [];
+      return JSON.parse(s);
+    } catch {
+      // fall through to balanced scan
+    }
+
+    // If the body starts with '{' prefer a brace-balanced scan; otherwise
+    // try bracket-balanced. If neither candidate is found, fall back to
+    // whichever delimiter appears first in the string.
+    const firstBrace = s.indexOf('{');
+    const firstBracket = s.indexOf('[');
+
+    const tryScan = (
+      start: number,
+      open: '{' | '['
+    ): unknown | null => {
+      if (start === -1) return null;
+      const close = open === '{' ? '}' : ']';
+      let depth = 0;
+      let inString = false;
+      let escaped = false;
+      for (let i = start; i < s.length; i++) {
+        const c = s[i];
+        if (escaped) {
+          escaped = false;
+          continue;
+        }
+        if (inString) {
+          if (c === '\\') escaped = true;
+          else if (c === '"') inString = false;
+          continue;
+        }
+        if (c === '"') {
+          inString = true;
+          continue;
+        }
+        if (c === open) depth++;
+        else if (c === close) {
+          depth--;
+          if (depth === 0) {
+            const slice = s.slice(start, i + 1);
+            try {
+              return JSON.parse(slice);
+            } catch {
+              return null;
+            }
+          }
+        }
+      }
+      return null;
+    };
+
+    // Prefer whichever delimiter appears first - if the model returned
+    // `{...}` with prose wrappers, we must NOT walk into a nested array
+    // and misread it as the signals list.
+    const candidates: Array<['{' | '[', number]> = [];
+    if (firstBrace !== -1) candidates.push(['{', firstBrace]);
+    if (firstBracket !== -1) candidates.push(['[', firstBracket]);
+    candidates.sort((a, b) => a[1] - b[1]);
+
+    for (const [open, start] of candidates) {
+      const parsed = tryScan(start, open);
+      if (parsed !== null) return parsed;
+    }
+
+    return null;
+  }
+
+  /**
+   * Map a single raw signal-like object from the AI response into an
+   * AnalysisSignal. Tolerates missing fields.
+   */
+  private mapSignal(
+    raw: Record<string, unknown>,
+    provider: string,
+    extraEvidence: Record<string, unknown> = {}
+  ): AnalysisSignal {
+    const confidenceNum = typeof raw['confidence'] === 'number' ? raw['confidence'] : 0.5;
+    return {
+      analyzerName: 'AI',
+      signalType:
+        (typeof raw['signalType'] === 'string' ? raw['signalType'] : undefined) ||
+        'unknown',
+      severity: this.normalizeSeverity(raw['severity']),
+      confidence: Math.max(0, Math.min(1, confidenceNum || 0.5)),
+      description:
+        (typeof raw['description'] === 'string' ? raw['description'] : undefined) ||
+        'No description provided',
+      evidence: {
+        provider,
+        rawSignal: raw,
+        ...extraEvidence,
+      },
+    } as AnalysisSignal;
+  }
+
+  /**
+   * Coerce a parsed JSON value into an AnalysisSignal[]. Accepts:
+   * - Array of signal objects (the standard contract)
+   * - Single signal object (wrapped into an array)
+   * - "Verdict object" shape { verdict, redFlags, reasoning, confidence, score, actions }
+   *   synthesized into one signal per red flag plus a terminal final_verdict signal
+   * Anything else returns an empty array with a parseError.
+   */
+  private coerceSignalsFromJson(
+    parsed: unknown,
+    provider: string,
+    input: NormalizedInput
+  ): ParseResult {
+    const extraEvidence = { inputType: input.type };
+
+    // Array of signal objects - the happy path.
+    if (Array.isArray(parsed)) {
+      const signals: AnalysisSignal[] = [];
+      for (const item of parsed) {
+        if (item && typeof item === 'object' && !Array.isArray(item)) {
+          signals.push(this.mapSignal(item as Record<string, unknown>, provider, extraEvidence));
+        }
+      }
+      if (signals.length === 0) {
+        return {
+          signals: [],
+          parseError: { message: 'JSON array contained no signal objects' },
+        };
+      }
+      return { signals, parseError: null };
+    }
+
+    if (parsed !== null && typeof parsed === 'object') {
+      const obj = parsed as Record<string, unknown>;
+
+      // Single-signal-object shape: has signalType / severity / description.
+      const looksLikeSignal =
+        typeof obj['signalType'] === 'string' ||
+        typeof obj['severity'] === 'string' ||
+        typeof obj['description'] === 'string';
+
+      const hasVerdictFields =
+        'verdict' in obj ||
+        'redFlags' in obj ||
+        'reasoning' in obj ||
+        'score' in obj ||
+        'actions' in obj;
+
+      // Verdict-object shape: synthesize signals from redFlags + terminal.
+      if (hasVerdictFields && !looksLikeSignal) {
+        const signals: AnalysisSignal[] = [];
+        const verdict =
+          typeof obj['verdict'] === 'string' ? (obj['verdict'] as string) : 'Unknown';
+        const confidenceRaw =
+          typeof obj['confidence'] === 'number' ? (obj['confidence'] as number) : 0.5;
+        const confidence = Math.max(0, Math.min(1, confidenceRaw || 0.5));
+        const reasoning =
+          typeof obj['reasoning'] === 'string' ? (obj['reasoning'] as string) : '';
+        const actions = Array.isArray(obj['actions'])
+          ? (obj['actions'] as unknown[]).filter((a): a is string => typeof a === 'string')
+          : [];
+        const redFlags = Array.isArray(obj['redFlags'])
+          ? (obj['redFlags'] as unknown[])
+          : [];
+
+        for (const rf of redFlags) {
+          if (typeof rf !== 'string' || rf.trim().length === 0) continue;
+          signals.push(
+            this.mapSignal(
+              {
+                signalType: 'ai_red_flag',
+                severity: 'medium',
+                confidence,
+                description: rf,
+              },
+              provider,
+              { ...extraEvidence, source: 'verdict_object' }
+            )
+          );
+        }
+
+        const verdictLower = verdict.toLowerCase();
+        const verdictSeverity: SignalSeverity =
+          verdictLower === 'malicious'
+            ? 'high'
+            : verdictLower === 'suspicious'
+              ? 'medium'
+              : verdictLower === 'safe'
+                ? 'low'
+                : 'medium';
+
+        const parts: string[] = [`VERDICT: ${verdict}`];
+        if (reasoning) parts.push(`\nTHREAT SUMMARY:\n${reasoning}`);
+        if (redFlags.length > 0) {
+          const rfList = redFlags
+            .filter((r): r is string => typeof r === 'string')
+            .map((r) => `- ${r}`)
+            .join('\n');
+          if (rfList) parts.push(`\nPRIMARY INDICATORS:\n${rfList}`);
+        }
+        if (actions.length > 0) {
+          parts.push(`\nRECOMMENDED ACTION:\n${actions.map((a) => `- ${a}`).join('\n')}`);
+        }
+
+        signals.push(
+          this.mapSignal(
+            {
+              signalType: 'final_verdict',
+              severity: verdictSeverity,
+              confidence,
+              description: parts.join('\n'),
+            },
+            provider,
+            { ...extraEvidence, source: 'verdict_object', verdict, actions }
+          )
+        );
+
+        return { signals, parseError: null };
       }
 
-      const rawSignals = JSON.parse(jsonMatch[0]);
+      // Single signal object - wrap into a one-element array.
+      if (looksLikeSignal) {
+        return {
+          signals: [this.mapSignal(obj, provider, extraEvidence)],
+          parseError: null,
+        };
+      }
 
-      // Convert to AnalysisSignal format
-      return rawSignals.map((signal: any) => ({
-        analyzerName: 'AI',
-        signalType: signal.signalType || 'unknown',
-        severity: this.normalizeSeverity(signal.severity),
-        confidence: Math.max(0, Math.min(1, signal.confidence || 0.5)),
-        description: signal.description || 'No description provided',
-        evidence: {
-          provider: _provider,
-          rawSignal: signal,
-          inputType: input.type,
+      return {
+        signals: [],
+        parseError: {
+          message: 'JSON object is neither a signal, nor a verdict-shaped response',
         },
-      }));
-    } catch (error) {
-      logger.error({
-        msg: 'Failed to parse AI response',
-        provider: _provider,
-        error: error instanceof Error ? error.message : String(error),
-      });
+      };
+    }
 
-      // Return empty array on parse failure
-      return [];
+    return {
+      signals: [],
+      parseError: {
+        message: `JSON value is not a signal container (got ${parsed === null ? 'null' : typeof parsed})`,
+      },
+    };
+  }
+
+  /**
+   * Generic AI response parser. Returns signals + parseError so callers
+   * can surface the exact parse failure into debug metadata.
+   * Never throws - any unexpected error is converted to a parseError.
+   */
+  private parseAIResponse(
+    responseText: string,
+    _provider: string,
+    input: NormalizedInput
+  ): ParseResult {
+    const parsed = this.extractJsonValue(responseText);
+    if (parsed === null) {
+      logger.warn({ msg: 'No JSON value found in AI response', provider: _provider });
+      return {
+        signals: [],
+        parseError: { message: 'No JSON value found in AI response' },
+      };
+    }
+
+    try {
+      return this.coerceSignalsFromJson(parsed, _provider, input);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.error({
+        msg: 'Unexpected error coercing AI response to signals',
+        provider: _provider,
+        error: message,
+      });
+      return {
+        signals: [],
+        parseError: { message: `coerce error: ${message}` },
+      };
+    }
+  }
+
+  /**
+   * Truncate a string for storage in ai_metadata JSONB.
+   * Adds a [truncated] marker when clipped.
+   */
+  private truncateString(value: string | undefined, maxBytes: number): string | undefined {
+    if (value === undefined || value === null) return value;
+    if (value.length <= maxBytes) return value;
+    return value.slice(0, maxBytes) + '\n...[truncated]';
+  }
+
+  /**
+   * Truncate a JSON-serializable value for storage. If stringified form
+   * exceeds maxBytes, return a wrapper marker instead of the original.
+   */
+  private truncateForStorage(value: unknown, maxBytes: number): unknown {
+    if (value === undefined || value === null) return value;
+    try {
+      const json = JSON.stringify(value);
+      if (json.length <= maxBytes) return value;
+      return {
+        _truncated: true,
+        preview: json.slice(0, maxBytes),
+      };
+    } catch {
+      return { _truncated: true, preview: '[unserializable]' };
+    }
+  }
+
+  /**
+   * Remove secrets (API keys in query params) from a URL before storing.
+   * Specifically targets Google's `?key=...` query param.
+   */
+  private sanitizeApiUrl(url: string): string {
+    try {
+      const u = new URL(url);
+      if (u.searchParams.has('key')) {
+        u.searchParams.set('key', '[redacted]');
+      }
+      return u.toString();
+    } catch {
+      return url.replace(/([?&]key=)[^&]+/gi, '$1[redacted]');
     }
   }
 
@@ -914,7 +1469,7 @@ Focus on: domain reputation, entropy, typosquatting, suspicious TLDs, URL patter
   private async fallbackReparse(
     originalResponse: string,
     config: AIProviderConfig
-  ): Promise<AnalysisSignal[]> {
+  ): Promise<ParseResult> {
     logger.warn({
       msg: 'Attempting fallback re-parsing - sending response back to AI for JSON conversion',
       provider: config.provider,
@@ -993,56 +1548,71 @@ Extract the key findings and convert to JSON. Response MUST be valid JSON array.
         reparseResponseLength: reparseResponse.length,
       });
 
-      // Try parsing the re-parsed response
-      const jsonMatch = reparseResponse.match(/\[[\s\S]*\]/);
-      if (!jsonMatch) {
+      // Try parsing the re-parsed response using the same shape-agnostic extractor
+      const parsed = this.extractJsonValue(reparseResponse);
+      if (parsed === null) {
         logger.error({
           msg: 'Fallback re-parsing also failed to produce valid JSON',
           provider: config.provider,
         });
-        return [];
+        return {
+          signals: [],
+          parseError: { message: 'Fallback re-parse produced no JSON value' },
+        };
       }
 
-      const rawSignals = JSON.parse(jsonMatch[0]);
-      const signals = rawSignals.map((signal: any) => ({
-        analyzerName: 'AI',
-        signalType: signal.signalType || 'unknown',
-        severity: this.normalizeSeverity(signal.severity),
-        confidence: Math.max(0, Math.min(1, signal.confidence || 0.5)),
-        description: signal.description || 'No description provided',
-        evidence: {
-          provider: config.provider,
-          rawSignal: signal,
-          fallbackReparse: true,
-        },
-      }));
-
-      logger.info({
-        msg: 'Fallback re-parsing successful',
-        provider: config.provider,
-        signalCount: signals.length,
-      });
-
-      return signals;
+      try {
+        // Synthesize a NormalizedInput-like stub just for inputType evidence.
+        // We do not have the original input here; mark as 'reparse'.
+        const stubInput = { type: 'reparse' as unknown as NormalizedInput['type'] } as NormalizedInput;
+        const result = this.coerceSignalsFromJson(parsed, config.provider, stubInput);
+        if (result.signals.length > 0) {
+          // Tag each signal's evidence as a fallback-reparse result.
+          for (const s of result.signals) {
+            s.evidence = { ...(s.evidence || {}), fallbackReparse: true };
+          }
+          logger.info({
+            msg: 'Fallback re-parsing successful',
+            provider: config.provider,
+            signalCount: result.signals.length,
+          });
+        }
+        return result;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return {
+          signals: [],
+          parseError: { message: `fallback coerce error: ${message}` },
+        };
+      }
     } catch (error) {
       logger.error({
         msg: 'Fallback re-parsing failed completely',
         provider: config.provider,
         error: error instanceof Error ? error.message : String(error),
       });
-      return [];
+      return {
+        signals: [],
+        parseError: {
+          message: error instanceof Error ? error.message : String(error),
+        },
+      };
     }
   }
 
   /**
-   * Normalize severity to standard levels
+   * Normalize severity to standard levels.
+   * Accepts `unknown` as defense-in-depth: if a future AI shape sneaks
+   * through with a missing / non-string severity, we return 'medium'
+   * rather than crashing the run with `toLowerCase of undefined`.
    */
-  private normalizeSeverity(severity: string): SignalSeverity {
+  private normalizeSeverity(severity: unknown): SignalSeverity {
+    if (typeof severity !== 'string') return 'medium';
     const normalized = severity.toLowerCase();
     if (['critical', 'high', 'medium', 'low'].includes(normalized)) {
       return normalized as SignalSeverity;
     }
-    return 'medium'; // Default to medium if unknown
+    return 'medium';
   }
 
   /**

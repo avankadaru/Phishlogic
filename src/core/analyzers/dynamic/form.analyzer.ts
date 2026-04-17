@@ -9,7 +9,7 @@ import type { NormalizedInput } from '../../models/input.js';
 import { isEmailInput, isUrlInput } from '../../models/input.js';
 import { getLogger } from '../../../infrastructure/logging/index.js';
 import type { Browser, BrowserContext, Page } from 'playwright';
-import { chromium } from 'playwright';
+import { getBrowserPool } from '../../../infrastructure/browser/browser-pool.js';
 import { loginPageDetectionService } from '../../services/login-page-detection.service.js';
 
 const logger = getLogger();
@@ -36,7 +36,7 @@ const SENSITIVE_FIELD_PATTERNS = {
  * Form Analyzer
  */
 export class FormAnalyzer extends BaseAnalyzer {
-  private browser: Browser | null = null;
+  protected browser: Browser | null = null;
 
   getName(): string {
     return 'FormAnalyzer';
@@ -366,29 +366,20 @@ export class FormAnalyzer extends BaseAnalyzer {
   }
 
   /**
-   * Get or create browser instance
+   * Get or create browser instance via the shared pool.
    */
-  private async getBrowser(): Promise<Browser> {
-    if (!this.browser) {
-      this.browser = await chromium.launch({
-        headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox'],
-        timeout: 45000, // 45 seconds - prevent indefinite hangs
-      });
-
-      logger.info('Playwright browser launched for FormAnalyzer');
+  protected async getBrowser(): Promise<Browser> {
+    if (!this.browser || !this.browser.isConnected()) {
+      this.browser = await getBrowserPool().getBrowser('FormAnalyzer');
     }
     return this.browser;
   }
 
   /**
-   * Close browser (cleanup)
+   * Clear the cached pool reference; the pool owns the actual browser.
    */
   async cleanup(): Promise<void> {
-    if (this.browser) {
-      await this.browser.close();
-      this.browser = null;
-      logger.info('Playwright browser closed for FormAnalyzer');
-    }
+    this.browser = null;
+    logger.debug({ msg: 'FormAnalyzer browser reference cleared' });
   }
 }
