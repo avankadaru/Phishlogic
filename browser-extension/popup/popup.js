@@ -114,6 +114,14 @@ function createHistoryItem(item) {
           </ul>
         </div>
       ` : ''}
+      ${item.actions && item.actions.length > 0 && !item.error ? `
+        <div class="actions">
+          <strong>Recommended Actions:</strong>
+          <ul>
+            ${item.actions.map(action => `<li>${action}</li>`).join('')}
+          </ul>
+        </div>
+      ` : ''}
       <div class="analysis-info">
         <div class="analysis-id-section">
           <span class="analysis-id-label">ID:</span>

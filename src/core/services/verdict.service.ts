@@ -701,7 +701,7 @@ export class VerdictService {
   /**
    * Calculate alert level based on score and verdict
    */
-  private calculateAlertLevel(score: number, verdict: Verdict): AlertLevel {
+  protected calculateAlertLevel(score: number, verdict: Verdict): AlertLevel {
     if (verdict === 'Malicious' || score >= 7.0) {
       return 'high';
     } else if (verdict === 'Suspicious' || score >= 4.0) {
@@ -716,7 +716,7 @@ export class VerdictService {
   /**
    * Generate plain English red flags from signals
    */
-  private generateRedFlags(signals: AnalysisSignal[]): RedFlag[] {
+  protected generateRedFlags(signals: AnalysisSignal[]): RedFlag[] {
     const redFlags: RedFlag[] = [];
     const seenCategories = new Set<string>();
 
@@ -730,7 +730,7 @@ export class VerdictService {
       const redFlag = this.signalToRedFlag(signal);
 
       // Avoid duplicate categories for similar signals
-      const categoryKey = `${redFlag.category}-${redFlag.severity}`;
+      const categoryKey = `${redFlag.category}-${signal.signalType}-${redFlag.severity}`;
       if (!seenCategories.has(categoryKey)) {
         redFlags.push(redFlag);
         seenCategories.add(categoryKey);
@@ -762,7 +762,7 @@ export class VerdictService {
    * Categorize signal type
    * Uses signal-config.json categories when available, falls back to heuristics
    */
-  private categorizeSignal(signalType: string): RedFlagCategory {
+  protected categorizeSignal(signalType: string): RedFlagCategory {
     // Try to get category from signal config
     const signalTypeConfig = this.signalConfig.signalTypes[signalType];
     if (signalTypeConfig) {

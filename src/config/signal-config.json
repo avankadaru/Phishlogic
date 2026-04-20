@@ -163,7 +163,55 @@
       "baseWeight": 2.2,
       "description": "URL uses a raw IP address as host",
       "canDowngrade": false,
-      "criticalOverride": false
+      "criticalOverride": true
+    },
+    "suspicious_tld": {
+      "category": "url_pattern",
+      "baseWeight": 1.3,
+      "description": "URL uses a suspicious top-level domain commonly associated with abuse",
+      "canDowngrade": true,
+      "criticalOverride": false,
+      "downgradeConditions": {
+        "requireCleanReputation": ["link"],
+        "logic": "AND",
+        "action": {
+          "newSeverity": "low",
+          "confidenceMultiplier": 0.4,
+          "reason": "clean reputation despite suspicious TLD"
+        }
+      }
+    },
+    "https_missing": {
+      "category": "url_pattern",
+      "baseWeight": 1.3,
+      "description": "URL uses HTTP instead of HTTPS",
+      "canDowngrade": true,
+      "criticalOverride": false,
+      "downgradeConditions": {
+        "requireCleanReputation": ["link"],
+        "logic": "AND",
+        "action": {
+          "newSeverity": "low",
+          "confidenceMultiplier": 0.4,
+          "reason": "clean reputation despite missing HTTPS"
+        }
+      }
+    },
+    "url_shortener": {
+      "category": "url_pattern",
+      "baseWeight": 1.0,
+      "description": "URL uses a link shortening service that hides the destination",
+      "canDowngrade": true,
+      "criticalOverride": false,
+      "downgradeConditions": {
+        "requireCleanReputation": ["link"],
+        "logic": "AND",
+        "action": {
+          "newSeverity": "low",
+          "confidenceMultiplier": 0.3,
+          "reason": "shortener resolves to clean destination"
+        }
+      }
     },
     "suspicious_hostname_structure": {
       "category": "url_pattern",
@@ -227,6 +275,64 @@
       "description": "Email content matches suspicious patterns (urgency, threats, impersonation)",
       "canDowngrade": false,
       "criticalOverride": false
+    },
+    "brand_lookalike_domain": {
+      "category": "url_pattern",
+      "baseWeight": 2.5,
+      "description": "Domain name is suspiciously similar to a known brand",
+      "canDowngrade": false,
+      "criticalOverride": false
+    },
+    "url_obfuscation_detected": {
+      "category": "url_pattern",
+      "baseWeight": 1.8,
+      "description": "URL uses adversarial encoding to hide its true destination",
+      "canDowngrade": false,
+      "criticalOverride": false
+    },
+    "shortener_chain_detected": {
+      "category": "redirect_chain",
+      "baseWeight": 1.6,
+      "description": "Multi-hop URL shortener chain detected",
+      "canDowngrade": true,
+      "downgradeConditions": {
+        "requireCleanReputation": ["link"],
+        "logic": "AND",
+        "action": {
+          "newSeverity": "low",
+          "confidenceMultiplier": 0.4,
+          "reason": "shortener chain resolves to legitimate domain"
+        }
+      }
+    },
+    "qrcode_in_page": {
+      "category": "url_pattern",
+      "baseWeight": 2.0,
+      "description": "QR code detected on rendered page containing URL",
+      "canDowngrade": true,
+      "downgradeConditions": {
+        "requireCleanReputation": ["link"],
+        "logic": "AND",
+        "action": {
+          "newSeverity": "low",
+          "confidenceMultiplier": 0.3,
+          "reason": "QR code URL resolves to legitimate domain"
+        }
+      }
+    },
+    "domain_resolution_failure": {
+      "category": "url_pattern",
+      "baseWeight": 1.0,
+      "description": "Domain does not resolve to any IP address (DNS A record lookup failed)",
+      "canDowngrade": true,
+      "criticalOverride": false
+    },
+    "prescan_navigation_failed": {
+      "category": "url_pattern",
+      "baseWeight": 1.0,
+      "description": "Browser navigation to the URL failed (connection refused, timeout, or unreachable)",
+      "canDowngrade": true,
+      "criticalOverride": false
     }
   },
   "verdictActions": {
@@ -242,6 +348,22 @@
       "Flag for manual review"
     ],
     "Safe": []
+  },
+  "urlVerdictActions": {
+    "Malicious": [
+      "Do not visit this URL — close the tab immediately",
+      "Report this URL to your security team",
+      "Block this domain in your firewall or browser"
+    ],
+    "Suspicious": [
+      "Do not enter any credentials or personal information",
+      "Verify the URL with the sender through a separate channel",
+      "Report this URL for further review"
+    ],
+    "Safe": [
+      "No action required — URL appears legitimate",
+      "Always verify unexpected requests for sensitive information"
+    ]
   },
   "thresholds": {
     "malicious": 0.7,

@@ -27,30 +27,48 @@ export async function runContentExtractors(
     timeoutMs,
   });
 
-  const extractionPromise = Promise.allSettled(extractors.map((extractor) => extractor.extract(input)));
+  // Track individual results as they complete so partial results survive a timeout.
+  // Previous approach used Promise.race([allSettled, timeout]) which discarded ALL
+  // results when the timeout fired — even extractors that had already completed.
+  const individualResults: (PromiseSettledResult<ExtractionResult<unknown>> | null)[] =
+    new Array(extractors.length).fill(null);
 
-  const timeoutPromise = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new Error('Extraction timeout')), timeoutMs)
-  );
+  const trackedPromises = extractors.map(async (extractor, i) => {
+    try {
+      const value = await extractor.extract(input);
+      individualResults[i] = { status: 'fulfilled' as const, value };
+    } catch (reason) {
+      individualResults[i] = { status: 'rejected' as const, reason };
+    }
+  });
 
-  let extractionResults: PromiseSettledResult<ExtractionResult<unknown>>[];
   let timedOut = false;
 
-  try {
-    extractionResults = await Promise.race([extractionPromise, timeoutPromise]);
-  } catch (error) {
-    timedOut = true;
+  await Promise.race([
+    Promise.all(trackedPromises),
+    new Promise<void>((resolve) => {
+      setTimeout(() => {
+        timedOut = true;
+        resolve();
+      }, timeoutMs);
+    }),
+  ]);
+
+  if (timedOut) {
+    const completed = individualResults.filter((r) => r !== null).length;
     logger.warn({
       msg: 'Content extraction timed out',
       timeoutMs,
-      error: error instanceof Error ? error.message : String(error),
+      completedExtractors: completed,
+      totalExtractors: extractors.length,
     });
-
-    extractionResults = extractors.map(() => ({
-      status: 'rejected' as const,
-      reason: new Error('Extraction timeout'),
-    }));
   }
+
+  // Use actual results for completed extractors; synthetic rejection for still-running ones.
+  const extractionResults: PromiseSettledResult<ExtractionResult<unknown>>[] =
+    individualResults.map((r) =>
+      r ?? { status: 'rejected' as const, reason: new Error('Extraction timeout') }
+    );
 
   const timings: Record<string, number> = {};
   const extractedData: Record<string, unknown> = {};

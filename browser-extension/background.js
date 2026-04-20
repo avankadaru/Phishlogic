@@ -99,6 +99,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
           score: result.score,
           reasoning: result.reasoning,
           redFlags: result.redFlags || [],
+          actions: result.actions || [],
           processingTime,
           timestamp: new Date().toISOString()
         });

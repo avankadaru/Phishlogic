@@ -71,8 +71,11 @@ export interface SignalConfig {
   /** Signal type definitions keyed by signal type */
   signalTypes: Record<string, SignalTypeConfig>;
 
-  /** Actions to take for each verdict type */
+  /** Actions to take for each verdict type (email) */
   verdictActions: Record<Verdict, string[]>;
+
+  /** Actions to take for each verdict type (URL) */
+  urlVerdictActions?: Record<Verdict, string[]>;
 
   /** Verdict thresholds for confidence scores */
   thresholds: {
@@ -185,8 +188,15 @@ export function getSeverityMultiplier(config: SignalConfig, severity: Severity):
 }
 
 /**
- * Get verdict actions for a verdict type
+ * Get verdict actions for a verdict type (email)
  */
 export function getVerdictActions(config: SignalConfig, verdict: Verdict): string[] {
   return config.verdictActions[verdict] ?? [];
+}
+
+/**
+ * Get URL-specific verdict actions for a verdict type
+ */
+export function getUrlVerdictActions(config: SignalConfig, verdict: Verdict): string[] {
+  return config.urlVerdictActions?.[verdict] ?? config.verdictActions[verdict] ?? [];
 }

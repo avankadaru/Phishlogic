@@ -17,10 +17,12 @@ interface AnalysisResult {
   confidence: number;
   redFlags: string[];
   actionItems: string[];
+  reasoning: string;
   executionMode: string;
   aiProvider?: string;
   processingTimeMs: number;
   analysisId: string;
+  signals?: any[];
 }
 
 export default function UrlTestPage() {
@@ -94,10 +96,12 @@ export default function UrlTestPage() {
         confidence: response.data.confidence || 0,
         redFlags: response.data.redFlags?.map((flag: any) => flag.message) || [],
         actionItems: response.data.actions || [],
+        reasoning: response.data.reasoning || '',
         executionMode: executionMode,
         aiProvider: undefined,
         processingTimeMs: response.data.metadata?.duration || 0,
         analysisId,
+        signals: response.data.signals || [],
       });
     } catch (error: any) {
       console.error('Analysis failed:', error);

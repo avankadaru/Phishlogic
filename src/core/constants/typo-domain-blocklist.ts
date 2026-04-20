@@ -12,12 +12,16 @@ export const BRAND_TYPOSQUAT_HOSTNAMES = new Set<string>([
   'yah00.com',
   'rnicrosoft.com',
   'inv0ices.com',
+  'xn--pple-43d.com', // αpple.com — Cyrillic 'а' homoglyph
 ]);
 
 /**
- * Returns true if hostname (with or without port) matches a known typosquat entry.
+ * Returns true if hostname (with or without port, with or without www.) matches a known typosquat entry.
  */
 export function isKnownBrandTyposquatHost(hostname: string): boolean {
-  const host = hostname.split(':')[0]?.toLowerCase() ?? '';
+  let host = hostname.split(':')[0]?.toLowerCase() ?? '';
+  if (host.startsWith('www.')) {
+    host = host.slice(4);
+  }
   return BRAND_TYPOSQUAT_HOSTNAMES.has(host);
 }

@@ -332,6 +332,182 @@ const SCENARIOS: Scenario[] = [
       }),
     ],
   },
+
+  // ── Phase 1 additions ──────────────────────────────────────────────
+
+  // Brand lookalike on unknown host → Suspicious (high signal floor)
+  {
+    id: 'suspicious-brand-lookalike',
+    url: 'https://www.googIe-login.com/signin',
+    expected: 'Suspicious',
+    signals: [
+      sig({
+        analyzerName: 'UrlEntropyAnalyzer',
+        signalType: 'brand_lookalike_domain',
+        severity: 'high',
+        confidence: 0.88,
+      }),
+    ],
+  },
+
+  // URL obfuscation signal alone on unknown host → Suspicious (medium url_pattern floor)
+  {
+    id: 'suspicious-obfuscated-url',
+    url: 'https://evil.example/%2568%2574%2574%2570',
+    expected: 'Suspicious',
+    signals: [
+      sig({
+        analyzerName: 'UrlEntropyAnalyzer',
+        signalType: 'url_obfuscation_detected',
+        severity: 'medium',
+        confidence: 0.8,
+      }),
+    ],
+  },
+
+  // Multi-hop shortener chain → Suspicious (medium redirect_chain floor)
+  {
+    id: 'suspicious-shortener-chain',
+    url: 'https://bit.ly/xyz123',
+    expected: 'Suspicious',
+    signals: [
+      sig({
+        analyzerName: 'RedirectAnalyzer',
+        signalType: 'shortener_chain_detected',
+        severity: 'medium',
+        confidence: 0.8,
+      }),
+      sig({
+        analyzerName: 'RedirectAnalyzer',
+        signalType: 'suspicious_redirect',
+        severity: 'medium',
+        confidence: 0.75,
+      }),
+    ],
+  },
+
+  // QR code on page with suspicious TLD → Suspicious
+  {
+    id: 'suspicious-qr-on-page',
+    url: 'https://evil-qr-host.xyz/page',
+    expected: 'Suspicious',
+    signals: [
+      sig({
+        analyzerName: 'RedirectAnalyzer',
+        signalType: 'qrcode_in_page',
+        severity: 'high',
+        confidence: 0.8,
+      }),
+    ],
+  },
+
+  // Brand lookalike + suspicious TLD combo → Suspicious with higher score
+  {
+    id: 'suspicious-lookalike-plus-tld',
+    url: 'https://paypa1-verify.xyz',
+    expected: 'Suspicious',
+    signals: [
+      sig({
+        analyzerName: 'UrlEntropyAnalyzer',
+        signalType: 'brand_lookalike_domain',
+        severity: 'high',
+        confidence: 0.9,
+      }),
+      sig({
+        analyzerName: 'UrlEntropyAnalyzer',
+        signalType: 'suspicious_tld',
+        severity: 'medium',
+        confidence: 0.75,
+      }),
+    ],
+  },
+
+  // Credential form on unknown host → Suspicious (credential_harvesting floor)
+  {
+    id: 'suspicious-form-unknown-host',
+    url: 'https://secure-login-verify.com/account',
+    expected: 'Suspicious',
+    signals: [
+      sig({
+        analyzerName: 'FormAnalyzer',
+        signalType: 'form_detected',
+        severity: 'medium',
+        confidence: 0.7,
+      }),
+    ],
+  },
+
+  // Script execution on unknown host → Suspicious (malicious_behavior floor)
+  {
+    id: 'suspicious-script-unknown-host',
+    url: 'https://evil-scripts.example/page',
+    expected: 'Suspicious',
+    signals: [
+      sig({
+        analyzerName: 'RedirectAnalyzer',
+        signalType: 'script_execution_detected',
+        severity: 'high',
+        confidence: 0.85,
+      }),
+    ],
+  },
+
+  // Domain recently registered (high) → Suspicious
+  {
+    id: 'suspicious-new-domain',
+    url: 'https://brand-new-phish.com/login',
+    expected: 'Suspicious',
+    signals: [
+      sig({
+        analyzerName: 'UrlEntropyAnalyzer',
+        signalType: 'domain_recently_registered',
+        severity: 'high',
+        confidence: 0.85,
+      }),
+    ],
+  },
+
+  // Low-severity signal only (high_entropy_url) on unknown host → Safe (low does NOT trigger floor)
+  {
+    id: 'safe-low-entropy-only',
+    url: 'https://random-but-harmless.com/abcdef',
+    expected: 'Safe',
+    signals: [
+      sig({
+        analyzerName: 'UrlEntropyAnalyzer',
+        signalType: 'high_entropy_url',
+        severity: 'low',
+        confidence: 0.5,
+      }),
+    ],
+  },
+
+  // Known-safe host with malicious-level signals (not NEVER_DOWNGRADE) → capped to Suspicious
+  {
+    id: 'known-host-high-signals-capped',
+    url: 'https://www.google.com/suspicious/path?x=evil',
+    expected: 'Suspicious',
+    signals: [
+      sig({
+        analyzerName: 'UrlEntropyAnalyzer',
+        signalType: 'suspicious_hostname_structure',
+        severity: 'medium',
+        confidence: 0.8,
+      }),
+      sig({
+        analyzerName: 'UrlEntropyAnalyzer',
+        signalType: 'high_entropy_url',
+        severity: 'medium',
+        confidence: 0.8,
+      }),
+      sig({
+        analyzerName: 'RedirectAnalyzer',
+        signalType: 'script_execution_detected',
+        severity: 'high',
+        confidence: 0.85,
+      }),
+    ],
+  },
 ];
 
 describe('URL verdict pipeline — scenarios sweep', () => {

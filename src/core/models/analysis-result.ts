@@ -87,7 +87,14 @@ export type SignalType =
   | 'urgency_manipulation'
   | 'authority_manipulation'
   | 'scarcity_manipulation'
-  | 'greed_manipulation';
+  | 'greed_manipulation'
+  // URL Normalization & Advanced Detection (Phase 1)
+  | 'brand_lookalike_domain'
+  | 'url_obfuscation_detected'
+  | 'shortener_chain_detected'
+  | 'qrcode_in_page'
+  | 'domain_resolution_failure'
+  | 'prescan_navigation_failed';
 
 /**
  * Severity levels for analysis signals

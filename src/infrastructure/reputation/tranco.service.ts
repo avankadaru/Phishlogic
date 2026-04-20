@@ -201,6 +201,29 @@ export class TrancoService {
     return this.rankMap.get(registrable.toLowerCase()) ?? null;
   }
 
+  /**
+   * Return the domain labels (without TLD) for the top-N ranked domains.
+   * Used by brand-lookalike detection to compare incoming domains against
+   * well-known brands. Filters out very short labels (< 3 chars) and
+   * numeric-only labels.
+   */
+  getTopNLabels(n: number): string[] {
+    this.ensureLoaded();
+    const entries = Array.from(this.rankMap.entries())
+      .sort((a, b) => a[1] - b[1])
+      .slice(0, n);
+
+    const labels: string[] = [];
+    const seen = new Set<string>();
+    for (const [domain] of entries) {
+      const label = domain.split('.')[0] ?? '';
+      if (label.length < 3 || /^\d+$/.test(label) || seen.has(label)) continue;
+      seen.add(label);
+      labels.push(label);
+    }
+    return labels;
+  }
+
   getMeta(): TrancoSnapshotMeta {
     this.ensureLoaded();
     return { ...this.meta };

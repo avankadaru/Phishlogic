@@ -83,17 +83,17 @@ export const urlScenarios: UrlScenario[] = [
     id: 'suspicious-hyphens',
     label: 'Many Hyphens',
     category: 'suspicious',
-    description: 'Hyphen-stuffed hostname triggers suspicious_hostname_structure.',
-    data: { url: 'https://account-verify-security-update.com' },
-    expectedSignals: ['suspicious_hostname_structure', 'high_entropy_url']
+    description: 'Hyphen-stuffed hostname (≥4 hyphens) triggers suspicious_hostname_structure (medium).',
+    data: { url: 'https://account-verify-security-update-now.com' },
+    expectedSignals: ['suspicious_hostname_structure']
   },
   {
     id: 'suspicious-tld',
-    label: 'Unusual TLD',
+    label: 'Unusual TLD + Port',
     category: 'suspicious',
-    description: 'Uncommon TLD triggers suspicious_tld (medium).',
-    data: { url: 'https://secure-banking.xyz' },
-    expectedSignals: ['suspicious_tld']
+    description: 'Suspicious TLD on a non-standard port triggers suspicious_hostname_structure (medium).',
+    data: { url: 'https://secure-banking.xyz:8443/login' },
+    expectedSignals: ['suspicious_hostname_structure', 'suspicious_tld']
   },
   {
     id: 'suspicious-port',
@@ -105,27 +105,27 @@ export const urlScenarios: UrlScenario[] = [
   },
   {
     id: 'suspicious-http',
-    label: 'HTTP Login Page',
+    label: 'HTTP (No HTTPS)',
     category: 'suspicious',
-    description: 'Cleartext HTTP login surface triggers https_missing.',
-    data: { url: 'http://example.com/login' },
+    description: 'Cleartext HTTP triggers https_missing (medium) on a non-Tranco host.',
+    data: { url: 'http://acme-corp.net/about' },
     expectedSignals: ['https_missing']
   },
   {
-    id: 'suspicious-brand-in-subdomain',
-    label: 'PayPal in Subdomain',
+    id: 'suspicious-brand-lookalike-paypal',
+    label: 'PayPal Lookalike',
     category: 'suspicious',
-    description: 'Brand-in-subdomain pattern; engine flags structure/entropy (medium).',
-    data: { url: 'https://paypal.secure-verify-account.com' },
-    expectedSignals: ['suspicious_hostname_structure', 'high_entropy_url']
+    description: 'Domain label "paypal-verify" triggers brand_lookalike_domain (high) via Jaro-Winkler.',
+    data: { url: 'https://paypal-verify.com/secure-login' },
+    expectedSignals: ['brand_lookalike_domain']
   },
   {
     id: 'suspicious-amazon-lookalike',
     label: 'Amazon Lookalike',
     category: 'suspicious',
-    description: 'Amazon-flavored hostname; medium structure/entropy signals only.',
+    description: 'Domain label "amazon-login-verify" triggers brand_lookalike_domain (high) via Jaro-Winkler.',
     data: { url: 'https://amazon-login-verify.com' },
-    expectedSignals: ['suspicious_hostname_structure', 'high_entropy_url']
+    expectedSignals: ['brand_lookalike_domain']
   },
 
   // ---------------------------------------------------------------------------

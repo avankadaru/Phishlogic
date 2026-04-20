@@ -74,7 +74,18 @@ export class LinkReputationUrlAnalyzer extends LinkReputationAnalyzer {
           signalType: signal.signalType,
           originalSeverity: signal.severity,
         });
-        out.push({ ...signal, severity: downgrade(signal.severity) });
+        const newSev = downgrade(signal.severity);
+        out.push({
+          ...signal,
+          severity: newSev,
+          description: `${signal.description} (downgraded: threat intelligence signal on Tranco top-1M host)`,
+          evidence: {
+            ...signal.evidence,
+            contextDowngraded: true,
+            originalSeverity: signal.severity,
+            downgradeReason: 'threat intelligence signal on Tranco top-1M host',
+          },
+        });
         continue;
       }
 

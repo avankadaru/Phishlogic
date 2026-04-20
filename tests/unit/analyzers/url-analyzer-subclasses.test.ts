@@ -88,7 +88,7 @@ describe('UrlEntropyUrlAnalyzer', () => {
     const analyzer = new UrlEntropyUrlAnalyzer();
     const out = await analyzer.analyze(urlInput('https://mail.google.com/path'));
     expect(out).toHaveLength(1);
-    expect(out[0]!.severity).toBe('low');
+    expect(out[0]!.severity).toBe('medium');
   });
 
   it('demotes numeric_ip_hostname for RFC1918 private IPs', async () => {
@@ -101,10 +101,10 @@ describe('UrlEntropyUrlAnalyzer', () => {
     const analyzer = new UrlEntropyUrlAnalyzer();
     const out = await analyzer.analyze(urlInput('http://192.168.1.1/admin'));
     expect(out).toHaveLength(1);
-    expect(out[0]!.severity).toBe('low');
+    expect(out[0]!.severity).toBe('medium');
   });
 
-  it('escalates typosquat_hostname to critical for IDN/punycode hosts', async () => {
+  it('escalates blocklist typosquat_hostname to critical on unknown hosts', async () => {
     jest
       .spyOn(UrlEntropyAnalyzer.prototype, 'analyze')
       .mockResolvedValue([
@@ -112,8 +112,22 @@ describe('UrlEntropyUrlAnalyzer', () => {
       ]);
 
     const analyzer = new UrlEntropyUrlAnalyzer();
-    const out = await analyzer.analyze(urlInput('https://xn--pple-43d.com/login'));
+    const out = await analyzer.analyze(urlInput('https://www.paypa1.com/login'));
     const escalated = out.find((s) => s.signalType === 'typosquat_hostname');
+    expect(escalated).toBeDefined();
+    expect(escalated!.severity).toBe('critical');
+  });
+
+  it('escalates numeric_ip_hostname to critical for public IPs', async () => {
+    jest
+      .spyOn(UrlEntropyAnalyzer.prototype, 'analyze')
+      .mockResolvedValue([
+        sig('UrlEntropyAnalyzer', 'numeric_ip_hostname', 'high'),
+      ]);
+
+    const analyzer = new UrlEntropyUrlAnalyzer();
+    const out = await analyzer.analyze(urlInput('http://45.33.32.156/login'));
+    const escalated = out.find((s) => s.signalType === 'numeric_ip_hostname');
     expect(escalated).toBeDefined();
     expect(escalated!.severity).toBe('critical');
   });
@@ -136,6 +150,30 @@ describe('UrlEntropyUrlAnalyzer', () => {
     const analyzer = new UrlEntropyUrlAnalyzer();
     await analyzer.analyze(urlInput('https://www.google.com/search'));
     expect(whoisSpy).not.toHaveBeenCalled();
+  });
+
+  it('emits domain_resolution_failure when DNS lookup fails on unknown host', async () => {
+    jest.spyOn(UrlEntropyAnalyzer.prototype, 'analyze').mockResolvedValue([]);
+    // Mock dns.promises.resolve4 to reject (NXDOMAIN)
+    const dns = await import('node:dns');
+    jest.spyOn(dns.promises, 'resolve4').mockRejectedValue(new Error('ENOTFOUND'));
+
+    const analyzer = new UrlEntropyUrlAnalyzer();
+    const out = await analyzer.analyze(urlInput('https://nonexistent-phish.example/login'));
+    const dnsSignal = out.find((s) => s.signalType === 'domain_resolution_failure');
+    expect(dnsSignal).toBeDefined();
+    expect(dnsSignal!.severity).toBe('medium');
+    expect(dnsSignal!.confidence).toBe(0.7);
+  });
+
+  it('does not perform DNS check for known-safe hosts', async () => {
+    jest.spyOn(UrlEntropyAnalyzer.prototype, 'analyze').mockResolvedValue([]);
+    const dns = await import('node:dns');
+    const dnsSpy = jest.spyOn(dns.promises, 'resolve4').mockResolvedValue(['1.2.3.4']);
+
+    const analyzer = new UrlEntropyUrlAnalyzer();
+    await analyzer.analyze(urlInput('https://www.google.com'));
+    expect(dnsSpy).not.toHaveBeenCalled();
   });
 });
 
@@ -178,6 +216,14 @@ describe('LinkReputationUrlAnalyzer', () => {
 });
 
 describe('RedirectUrlAnalyzer', () => {
+  // Mock QR detection in all redirect tests to avoid real Playwright launches
+  beforeEach(() => {
+    jest.spyOn(
+      RedirectUrlAnalyzer.prototype as unknown as { detectQrCodeOnPage: (u: string) => Promise<AnalysisSignal | null> },
+      'detectQrCodeOnPage'
+    ).mockResolvedValue(null);
+  });
+
   it('preserves automatic_download_detected even on known-safe hosts', async () => {
     jest
       .spyOn(RedirectAnalyzer.prototype, 'analyze')
@@ -208,8 +254,8 @@ describe('RedirectUrlAnalyzer', () => {
   it('does not call the shortener resolver for non-shortener hosts', async () => {
     jest.spyOn(RedirectAnalyzer.prototype, 'analyze').mockResolvedValue([]);
     const resolveSpy = jest.spyOn(
-      RedirectUrlAnalyzer.prototype as unknown as { resolveShortener: (u: string) => Promise<string | null> },
-      'resolveShortener'
+      RedirectUrlAnalyzer.prototype as unknown as { resolveShortenerChain: (u: string) => Promise<Array<{ url: string; resolvedTo: string; durationMs: number }>> },
+      'resolveShortenerChain'
     );
 
     const analyzer = makeRedirectUrlAnalyzer();
@@ -221,10 +267,12 @@ describe('RedirectUrlAnalyzer', () => {
     jest.spyOn(RedirectAnalyzer.prototype, 'analyze').mockResolvedValue([]);
     jest
       .spyOn(
-        RedirectUrlAnalyzer.prototype as unknown as { resolveShortener: (u: string) => Promise<string | null> },
-        'resolveShortener'
+        RedirectUrlAnalyzer.prototype as unknown as { resolveShortenerChain: (u: string) => Promise<Array<{ url: string; resolvedTo: string; durationMs: number }>> },
+        'resolveShortenerChain'
       )
-      .mockResolvedValue('https://phish-unknown.example/landing');
+      .mockResolvedValue([
+        { url: 'https://bit.ly/abc123', resolvedTo: 'https://phish-unknown.example/landing', durationMs: 500 },
+      ]);
 
     const analyzer = makeRedirectUrlAnalyzer();
     const out = await analyzer.analyze(urlInput('https://bit.ly/abc123'));
@@ -240,10 +288,12 @@ describe('RedirectUrlAnalyzer', () => {
     jest.spyOn(RedirectAnalyzer.prototype, 'analyze').mockResolvedValue([]);
     jest
       .spyOn(
-        RedirectUrlAnalyzer.prototype as unknown as { resolveShortener: (u: string) => Promise<string | null> },
-        'resolveShortener'
+        RedirectUrlAnalyzer.prototype as unknown as { resolveShortenerChain: (u: string) => Promise<Array<{ url: string; resolvedTo: string; durationMs: number }>> },
+        'resolveShortenerChain'
       )
-      .mockResolvedValue('https://www.google.com/landing');
+      .mockResolvedValue([
+        { url: 'https://t.co/xyz', resolvedTo: 'https://www.google.com/landing', durationMs: 300 },
+      ]);
 
     const analyzer = makeRedirectUrlAnalyzer();
     const out = await analyzer.analyze(urlInput('https://t.co/xyz'));

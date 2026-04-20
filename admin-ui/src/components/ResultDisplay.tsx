@@ -9,6 +9,7 @@ interface Props {
     confidence: number;
     redFlags: string[];
     actionItems?: string[];
+    reasoning?: string;
     executionMode?: string;
     aiProvider?: string;
     processingTimeMs?: number;
@@ -83,6 +84,26 @@ export function ResultDisplay({ result }: Props) {
           </div>
         </div>
       </div>
+
+      {/* Verdict Summary */}
+      {result.reasoning && (
+        <div className={cn(
+          'rounded-lg p-3 border',
+          result.verdict === 'Safe' && 'bg-green-50 dark:bg-green-950/20 border-green-200 dark:border-green-800',
+          result.verdict === 'Suspicious' && 'bg-yellow-50 dark:bg-yellow-950/20 border-yellow-200 dark:border-yellow-800',
+          result.verdict === 'Malicious' && 'bg-red-50 dark:bg-red-950/20 border-red-200 dark:border-red-800',
+        )}>
+          <p className="text-sm font-medium mb-1">Verdict Summary</p>
+          <p className={cn(
+            'text-sm',
+            result.verdict === 'Safe' && 'text-green-800 dark:text-green-300',
+            result.verdict === 'Suspicious' && 'text-yellow-800 dark:text-yellow-300',
+            result.verdict === 'Malicious' && 'text-red-800 dark:text-red-300',
+          )}>
+            {result.reasoning}
+          </p>
+        </div>
+      )}
 
       {/* Signals */}
       <div>

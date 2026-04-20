@@ -40,8 +40,20 @@ export class FormUrlAnalyzer extends FormAnalyzer {
   }
 
   override async analyze(input: NormalizedInput): Promise<AnalysisSignal[]> {
+    if (!isUrlInput(input)) return super.analyze(input);
+
+    // Skip browser navigation when prescan already failed (domain unreachable)
+    const fetchError = (input.riskProfile as any)?.urlFetch?.fetchError;
+    if (fetchError) {
+      logger.info({
+        msg: 'FormUrlAnalyzer: skipping — prescan navigation already failed',
+        url: input.data.url,
+        fetchError,
+      });
+      return [];
+    }
+
     const signals = await super.analyze(input);
-    if (!isUrlInput(input)) return signals;
 
     const url = input.data.url;
     const policy = getKnownDomainPolicy();
@@ -81,7 +93,18 @@ export class FormUrlAnalyzer extends FormAnalyzer {
             msg: 'FormUrlAnalyzer: suppressing credential form on KNOWN_AUTH_ORIGIN',
             host,
           });
-          out.push({ ...signal, severity: downgrade(signal.severity) });
+          const newSev = downgrade(signal.severity);
+          out.push({
+            ...signal,
+            severity: newSev,
+            description: `${signal.description} (downgraded: host is a recognized authentication origin)`,
+            evidence: {
+              ...signal.evidence,
+              contextDowngraded: true,
+              originalSeverity: signal.severity,
+              downgradeReason: 'host is a recognized authentication origin',
+            },
+          });
           continue;
         }
 

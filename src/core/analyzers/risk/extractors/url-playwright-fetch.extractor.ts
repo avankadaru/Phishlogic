@@ -157,36 +157,41 @@ export class UrlPlaywrightFetchExtractor extends BaseExtractor<UrlPlaywrightFetc
     let hasPasswordField = false;
     let imageTagCount = 0;
 
-    try {
-      renderedHtml = await page.content();
-      if (renderedHtml.length > MAX_RENDERED_HTML_LENGTH) {
-        renderedHtml = renderedHtml.slice(0, MAX_RENDERED_HTML_LENGTH);
+    // Skip content introspection when navigation failed — there's nothing
+    // useful on a page that never loaded, and the $$eval calls can block
+    // for seconds on a dead connection, pushing us past the prescan timeout.
+    if (!fetchError) {
+      try {
+        renderedHtml = await page.content();
+        if (renderedHtml.length > MAX_RENDERED_HTML_LENGTH) {
+          renderedHtml = renderedHtml.slice(0, MAX_RENDERED_HTML_LENGTH);
+        }
+
+        scriptSources = await page
+          .$$eval('script[src]', (nodes) =>
+            // Page context is DOM; cast to any to avoid pulling in DOM lib in Node build.
+            nodes.map((n) => (n as unknown as { src: string }).src).filter(Boolean)
+          )
+          .catch(() => []);
+
+        iframeSources = await page
+          .$$eval('iframe[src]', (nodes) =>
+            nodes.map((n) => (n as unknown as { src: string }).src).filter(Boolean)
+          )
+          .catch(() => []);
+
+        hasPasswordField = await page
+          .$$eval('input[type="password"]', (nodes) => nodes.length > 0)
+          .catch(() => false);
+
+        imageTagCount = await page.$$eval('img', (nodes) => nodes.length).catch(() => 0);
+      } catch (err) {
+        logger.debug({
+          msg: 'UrlPlaywrightFetchExtractor: content introspection error',
+          url: requestedUrl,
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
-
-      scriptSources = await page
-        .$$eval('script[src]', (nodes) =>
-          // Page context is DOM; cast to any to avoid pulling in DOM lib in Node build.
-          nodes.map((n) => (n as unknown as { src: string }).src).filter(Boolean)
-        )
-        .catch(() => []);
-
-      iframeSources = await page
-        .$$eval('iframe[src]', (nodes) =>
-          nodes.map((n) => (n as unknown as { src: string }).src).filter(Boolean)
-        )
-        .catch(() => []);
-
-      hasPasswordField = await page
-        .$$eval('input[type="password"]', (nodes) => nodes.length > 0)
-        .catch(() => false);
-
-      imageTagCount = await page.$$eval('img', (nodes) => nodes.length).catch(() => 0);
-    } catch (err) {
-      logger.debug({
-        msg: 'UrlPlaywrightFetchExtractor: content introspection error',
-        url: requestedUrl,
-        error: err instanceof Error ? err.message : String(err),
-      });
     }
 
     await release();

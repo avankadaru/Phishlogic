@@ -19,8 +19,8 @@ describe('UrlEntropyAnalyzer', () => {
   });
 
   describe('getWeight', () => {
-    it('should return weight of 1.0', () => {
-      expect(analyzer.getWeight()).toBe(1.0);
+    it('should return weight of 1.2', () => {
+      expect(analyzer.getWeight()).toBe(1.2);
     });
   });
 

@@ -53,7 +53,8 @@ NATIVE_SIGNAL_SUMMARY (from rules engine — verify, do not blindly trust):
 
 RUBRIC (examples):
 - Legitimate major sites on matching corporate domains → Safe unless URL structure is wildly anomalous.
-- paypa1.com, g00gle.com, micr0s0ft look-alikes → Malicious.
+- paypa1.com, g00gle.com, micr0s0ft look-alikes (character-substitution typosquats) → Malicious.
+- brand-name-with-extra-words.com (e.g. paypal-verify.com, amazon-login-verify.com) → Suspicious, NOT Malicious. These are brand lookalikes, not character-substitution typosquats.
 - bit.ly / t.co without destination visibility → Suspicious or Malicious depending on claimed intent in path.
 - Host is dotted decimal IPv4 or bracketed IPv6 → at least Suspicious; if path suggests login → Malicious.
 - Many subdomains (5+ labels) or 4+ hyphens in registrable host → Suspicious.

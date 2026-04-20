@@ -266,6 +266,21 @@ body {
   margin-bottom: 2px;
 }
 
+.actions {
+  font-size: 12px;
+  color: #1565c0;
+  margin-bottom: 8px;
+}
+
+.actions ul {
+  margin-left: 20px;
+  margin-top: 4px;
+}
+
+.actions li {
+  margin-bottom: 2px;
+}
+
 .timestamp {
   font-size: 11px;
   color: #999;
